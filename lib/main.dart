@@ -14,7 +14,7 @@ const categories = ['Tops', 'Bottoms', 'Dresses', 'Jackets', 'Shoes', 'Accessori
 
 /// Paste the address of your Cloudflare Worker here (see worker/SETUP.md).
 /// Leave it as is to use Muse without AI.
-const aiEndpoint = 'PASTE_YOUR_WORKER_URL_HERE';
+const aiEndpoint = 'muse-ai.ryuadhikumara.workers.dev';
 bool get aiConfigured => !aiEndpoint.startsWith('PASTE');
 
 class ClosetItem {
