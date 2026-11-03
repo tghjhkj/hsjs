@@ -1,0 +1,34 @@
+name: Build website zip
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Generate web files if missing
+        run: |
+          if [ ! -d web ]; then
+            cp lib/main.dart /tmp/main.dart
+            cp pubspec.yaml /tmp/pubspec.yaml
+            flutter create --project-name muse --platforms=web .
+            cp /tmp/main.dart lib/main.dart
+            cp /tmp/pubspec.yaml pubspec.yaml
+          fi
+
+      - run: flutter pub get
+      - run: flutter build web --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: muse-web
+          path: build/web
