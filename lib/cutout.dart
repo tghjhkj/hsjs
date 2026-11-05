@@ -15,88 +15,144 @@ import 'main.dart';
 Future<String?> removeBackground(String imageBase64) async {
   final photo = base64Decode(imageBase64);
 
-  // 1) Ask the AI for the outline (best for busy backgrounds).
-  if (aiConfigured) {
-    try {
-      final isPng = photo.length > 3 && photo[0] == 0x89 && photo[1] == 0x50;
-      final res = await http
-          .post(
-            Uri.parse(aiEndpoint),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({
-              'mode': 'cutout',
-              'image': imageBase64,
-              'mime': isPng ? 'image/png' : 'image/jpeg',
-            }),
-          )
-          .timeout(const Duration(seconds: 40));
-      if (res.statusCode == 200) {
-        final data = jsonDecode(res.body) as Map<String, dynamic>;
-        final b = (data['box'] as List).map((n) => (n as num).toDouble()).toList();
-        final mask = base64Decode(data['mask'] as String);
-        final png = await _applyMask(photo, Rect.fromLTRB(b[0], b[1], b[2], b[3]), mask);
-        return base64Encode(png);
-      }
-    } catch (_) {
-      // fall through to the free method below
-    }
+  // 1) Free and instant: works when the background is one plain color.
+  try {
+    final quick = await _floodCutout(photo);
+    if (quick != null) return quick;
+  } catch (_) {
+    // try the AI next
   }
 
-  // 2) No AI (or it failed): remove the plain background around the edges.
+  // 2) Busy background: ask the AI for the outline.
+  if (!aiConfigured) return null;
   try {
-    return await _floodCutout(photo);
+    final isPng = photo.length > 3 && photo[0] == 0x89 && photo[1] == 0x50;
+    final res = await http
+        .post(
+          Uri.parse(aiEndpoint),
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'mode': 'cutout',
+            'image': imageBase64,
+            'mime': isPng ? 'image/png' : 'image/jpeg',
+          }),
+        )
+        .timeout(const Duration(seconds: 40));
+    if (res.statusCode != 200) return null;
+    final data = jsonDecode(res.body) as Map<String, dynamic>;
+    final b = (data['box'] as List).map((n) => (n as num).toDouble()).toList();
+    final mask = base64Decode(data['mask'] as String);
+    final png = await _applyMask(photo, Rect.fromLTRB(b[0], b[1], b[2], b[3]), mask);
+    return base64Encode(png);
   } catch (_) {
     return null;
   }
 }
 
-/// Crops the photo to the item's box and keeps only the pixels inside the mask.
+/// Crops the photo to the item's box and removes everything outside the AI's mask.
 Future<Uint8List> _applyMask(Uint8List photo, Rect box, Uint8List maskPng) async {
   final img = await decodeImageFromList(photo);
   final mask = await decodeImageFromList(maskPng);
-  // A good mask is partly white and partly black. All-white or all-black means it failed.
-  final md = (await mask.toByteData(format: ui.ImageByteFormat.rawRgba))!;
-  var on = 0;
-  for (var i = 0; i < md.lengthInBytes; i += 4) {
-    if (md.getUint8(i) > 127) on++;
-  }
-  final frac = on / (mask.width * mask.height);
-  if (frac < 0.06 || frac > 0.97) throw Exception('bad mask');
   final src = Rect.fromLTRB(box.left * img.width, box.top * img.height,
       box.right * img.width, box.bottom * img.height);
   // Keep files small: the longest side is at most 400 pixels.
   final scale = min(1.0, 400 / max(src.width, src.height));
-  final dst = Rect.fromLTWH(0, 0, src.width * scale, src.height * scale);
+  final w = max(1, (src.width * scale).round()), h = max(1, (src.height * scale).round());
+  final dst = Rect.fromLTWH(0, 0, w.toDouble(), h.toDouble());
 
-  final recorder = ui.PictureRecorder();
-  final canvas = ui.Canvas(recorder, dst);
-  canvas.saveLayer(dst, ui.Paint());
-  canvas.drawImageRect(img, src, dst, ui.Paint());
-  // The mask is a gray map (white = item). Turn brightness into transparency,
-  // with a fairly sharp edge, and keep only what it covers.
-  canvas.drawImageRect(
-    mask,
-    Rect.fromLTWH(0, 0, mask.width.toDouble(), mask.height.toDouble()),
-    dst,
-    ui.Paint()
-      ..blendMode = ui.BlendMode.dstIn
-      ..colorFilter = const ColorFilter.matrix(<double>[
-        0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0,
-        0.85, 2.86, 0.29, 0, -480,
-      ]),
-  );
-  canvas.restore();
+  Future<Uint8List> pixels(ui.Image image, Rect from) async {
+    final rec = ui.PictureRecorder();
+    ui.Canvas(rec, dst).drawImageRect(image, from, dst, ui.Paint()..filterQuality = ui.FilterQuality.medium);
+    final out = await rec.endRecording().toImage(w, h);
+    final d = (await out.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+    return d.buffer.asUint8List(d.offsetInBytes, d.lengthInBytes);
+  }
 
-  final out = await recorder.endRecording().toImage(dst.width.round(), dst.height.round());
-  final data = await out.toByteData(format: ui.ImageByteFormat.png);
-  return data!.buffer.asUint8List();
+  final px = await pixels(img, src);
+  final mp = await pixels(mask, Rect.fromLTWH(0, 0, mask.width.toDouble(), mask.height.toDouble()));
+  // The mask is a gray map (white = item). Dark pixels are background.
+  final bg = Uint8List(w * h);
+  for (var p = 0; p < w * h; p++) {
+    final lum = mp[p * 4] * 0.3 + mp[p * 4 + 1] * 0.59 + mp[p * 4 + 2] * 0.11;
+    bg[p] = lum < 128 ? 1 : 0;
+  }
+  final kept = _cleanBg(bg, w, h);
+  // All-white or all-black means the AI's outline failed.
+  if (kept < 0.06 || kept > 0.97) throw Exception('bad mask');
+  return _cropAndEncode(px, w, h, bg);
 }
 
-/// Asks the image AI for a clean flat photo of the clothing item (on a green
-/// background), then makes the green transparent. Needs billing on your Google key.
-Future<({String? image, String? error})> flattenClothing(String imageBase64) async {
+/// Tidies a background map: keeps only the biggest piece of clothing, fills
+/// small holes inside it, and returns the share of the picture that is clothing.
+double _cleanBg(Uint8List bg, int w, int h) {
+  final n = w * h;
+  final mark = Int32List(n);
+  var touchesEdge = false;
+
+  /// Collects the connected pixels around [start] whose value is [value].
+  List<int> region(int start, int value, int id) {
+    final cells = <int>[];
+    final stack = <int>[start];
+    mark[start] = id;
+    touchesEdge = false;
+    while (stack.isNotEmpty) {
+      final p = stack.removeLast();
+      cells.add(p);
+      final x = p % w, y = p ~/ w;
+      if (x == 0 || y == 0 || x == w - 1 || y == h - 1) touchesEdge = true;
+      void visit(int q) {
+        if (mark[q] == 0 && bg[q] == value) {
+          mark[q] = id;
+          stack.add(q);
+        }
+      }
+
+      if (x > 0) visit(p - 1);
+      if (x < w - 1) visit(p + 1);
+      if (y > 0) visit(p - w);
+      if (y < h - 1) visit(p + w);
+    }
+    return cells;
+  }
+
+  var id = 0;
+  List<int> best = [];
+  for (var p = 0; p < n; p++) {
+    if (bg[p] == 0 && mark[p] == 0) {
+      final cells = region(p, 0, ++id);
+      if (cells.length > best.length) best = cells;
+    }
+  }
+  if (best.isEmpty) return 0;
+  final keep = Uint8List(n);
+  for (final p in best) {
+    keep[p] = 1;
+  }
+  for (var p = 0; p < n; p++) {
+    bg[p] = keep[p] == 1 ? 0 : 1;
+  }
+
+  // Fill small holes that are not connected to the outside.
+  mark.fillRange(0, n, 0);
+  for (var p = 0; p < n; p++) {
+    if (bg[p] == 1 && mark[p] == 0) {
+      final cells = region(p, 1, ++id);
+      if (!touchesEdge && cells.length < n * 0.015) {
+        for (final q in cells) {
+          bg[q] = 0;
+        }
+      }
+    }
+  }
+  return best.length / n;
+}
+
+/// Asks the image AI for a front-facing photo of the clothing item, posed like
+/// the model (standing straight, arms down), on a green background (magenta when
+/// [green] is true, so green clothes survive), then makes the background
+/// transparent. Needs billing on your Google key.
+Future<({String? image, String? error})> flattenClothing(String imageBase64,
+    {String category = 'Tops', bool green = false}) async {
   if (!aiConfigured) return (image: null, error: 'Add your AI address first.');
   try {
     final photo = base64Decode(imageBase64);
@@ -108,6 +164,8 @@ Future<({String? image, String? error})> flattenClothing(String imageBase64) asy
           body: jsonEncode({
             'mode': 'flatten',
             'image': imageBase64,
+            'category': category,
+            'bg': green ? 'magenta' : 'green',
             'mime': isPng ? 'image/png' : 'image/jpeg',
           }),
         )
@@ -119,16 +177,16 @@ Future<({String? image, String? error})> flattenClothing(String imageBase64) asy
       return (image: null, error: 'The image AI said no. It may need billing turned on.');
     }
     final data = jsonDecode(res.body) as Map<String, dynamic>;
-    final png = await _keyOutGreen(base64Decode(data['image'] as String));
+    final png = await _keyOutGreen(base64Decode(data['image'] as String), magenta: green);
     return (image: base64Encode(png), error: null);
   } catch (_) {
     return (image: null, error: 'Could not make a flat photo. Try again.');
   }
 }
 
-/// Turns the green background transparent (starting from the edges, so green
-/// inside the clothing is kept), then crops to the item and shrinks it.
-Future<Uint8List> _keyOutGreen(Uint8List bytes) async {
+/// Turns the green (or magenta) background transparent, starting from the edges
+/// so the same colour inside the clothing is kept, then crops to the item.
+Future<Uint8List> _keyOutGreen(Uint8List bytes, {bool magenta = false}) async {
   final img = await decodeImageFromList(bytes);
   final w = img.width, h = img.height;
   final bd = (await img.toByteData(format: ui.ImageByteFormat.rawRgba))!;
@@ -136,6 +194,7 @@ Future<Uint8List> _keyOutGreen(Uint8List bytes) async {
 
   bool greenish(int p, int margin) {
     final r = px[p * 4], g = px[p * 4 + 1], b = px[p * 4 + 2];
+    if (magenta) return r > 120 && b > 120 && r - g > margin && b - g > margin;
     return g > 120 && g - r > margin && g - b > margin;
   }
 
@@ -263,6 +322,7 @@ Future<String?> _floodCutout(Uint8List photo) async {
     dev += dist(y * w) + dist(y * w + w - 1);
     c += 2;
   }
+  if (dev / c > 24) return null; // edges are busy, so leave it to the AI
   final tol = (dev / c * 2.5).clamp(34.0, 75.0);
 
   final bg = Uint8List(w * h);
@@ -292,11 +352,7 @@ Future<String?> _floodCutout(Uint8List photo) async {
     push(x, y - 1);
   }
 
-  var removed = 0;
-  for (var p = 0; p < w * h; p++) {
-    removed += bg[p];
-  }
-  final share = removed / (w * h);
-  if (share < 0.08 || share > 0.9) return null; // nothing to cut, or it ate the clothes
+  final kept = _cleanBg(bg, w, h);
+  if (kept < 0.08 || kept > 0.92) return null; // nothing to cut, or it ate the clothes
   return base64Encode(await _cropAndEncode(px, w, h, bg));
 }

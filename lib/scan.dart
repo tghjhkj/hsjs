@@ -5,15 +5,16 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
-import 'cutout.dart';
+import 'flat_art.dart';
 import 'main.dart';
 import 'theme.dart';
 
 class Detection {
   final String name, category, color;
   final Rect box; // each side is 0..1 of the photo
+  final FlatSpec? spec; // how the AI says it looks, used to draw a flat picture
   bool selected = false;
-  Detection(this.name, this.category, this.color, this.box);
+  Detection(this.name, this.category, this.color, this.box, [this.spec]);
 }
 
 /// Crops part of a photo (box sides are 0..1) and returns it as PNG bytes.
@@ -68,17 +69,19 @@ class _ScanPageState extends State<ScanPage> {
             body: jsonEncode({'mode': 'detect', 'image': base64Encode(widget.bytes)}),
           )
           .timeout(const Duration(seconds: 60));
-      if (res.statusCode != 200) throw Exception('status ${res.statusCode}');
+      if (res.statusCode != 200) throw Exception('${res.statusCode} ${res.body}');
       final data = jsonDecode(res.body) as Map<String, dynamic>;
       final found = <Detection>[];
       for (final e in (data['items'] as List? ?? [])) {
         final b = (e['box'] as List).map((n) => (n as num).toDouble()).toList();
         final c = e['category'];
+        final cat = categories.contains(c) ? c as String : 'Tops';
         found.add(Detection(
           (e['name'] ?? 'Item').toString(),
-          categories.contains(c) ? c as String : 'Tops',
+          cat,
           (e['color'] ?? '').toString(),
           Rect.fromLTRB(b[0], b[1], b[2], b[3]),
+          FlatSpec.fromJson(e as Map, cat),
         ));
       }
       if (!mounted) return;
@@ -88,11 +91,11 @@ class _ScanPageState extends State<ScanPage> {
         _busy = false;
         if (found.isEmpty) _error = 'No clothing found. Try a clearer photo.';
       });
-    } catch (_) {
+    } catch (e) {
       if (mounted) {
         setState(() {
           _busy = false;
-          _error = 'Could not reach the AI. Check your Worker address and try again.';
+          _error = 'The AI helper failed: ${aiWhy(e)}';
         });
       }
     }
@@ -101,14 +104,21 @@ class _ScanPageState extends State<ScanPage> {
   Future<void> _add() async {
     setState(() => _busy = true);
     for (final d in _found.where((d) => d.selected)) {
-      final png = base64Encode(await cropPhoto(widget.bytes, d.box));
-      final cut = await removeBackground(png); // falls back to the plain crop
+      // Preferred: a front-facing photo of the piece that fits the model, made by
+      // the image AI from the cropped part of the photo. Otherwise a flat drawing.
+      final spec = d.spec ?? FlatSpec.guess(d.category, d.color);
+      final crop = base64Encode(await cropPhoto(widget.bytes, d.box));
+      final look = await fittedLook(crop, spec);
+      final image = look.image;
+      final specJson = spec.toJson();
       await closet.add(ClosetItem(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
         name: d.name,
         category: d.category,
         color: d.color,
-        imageBase64: cut ?? png,
+        imageBase64: image,
+        spec: specJson,
+        fitted: look.fitted,
       ));
     }
     if (!mounted) return;

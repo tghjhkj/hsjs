@@ -50,10 +50,10 @@ class _StylistPanelState extends State<StylistPanel> {
           .post(Uri.parse(aiEndpoint),
               headers: {'Content-Type': 'application/json'}, body: jsonEncode(body))
           .timeout(const Duration(seconds: 45));
-      if (res.statusCode != 200) throw Exception('status ${res.statusCode}');
+      if (res.statusCode != 200) throw Exception('${res.statusCode} ${res.body}');
       return jsonDecode(res.body) as Map<String, dynamic>;
-    } catch (_) {
-      if (mounted) _toast('Could not reach the AI. Try again.');
+    } catch (e) {
+      if (mounted) _toast('AI problem: ${aiWhy(e)}');
       return null;
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -126,7 +126,7 @@ class _StylistPanelState extends State<StylistPanel> {
                       GestureDetector(
                         onTap: () {
                           if (outfitSlots.contains(it.category)) {
-                            avatarOutfit[it.category] = it;
+                            wearPiece(it.category, it);
                             widget.onChanged();
                           }
                           Navigator.pop(sheet);
