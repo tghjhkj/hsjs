@@ -621,7 +621,8 @@ class _AvatarPageState extends State<AvatarPage> {
               height: 400,
               padding: const EdgeInsets.symmetric(vertical: 16),
               decoration: BoxDecoration(color: lilac, borderRadius: BorderRadius.circular(24)),
-              child: const AvatarView(),
+              // Not const on purpose: a const widget is never rebuilt, so the model would ignore the sliders.
+              child: AvatarView(),
             ),
             const Label('Body type'),
             SegmentedButton<String>(

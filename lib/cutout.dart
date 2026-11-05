@@ -13,27 +13,38 @@ import 'main.dart';
 /// outside that outline transparent. Returns a new base64 PNG, or null if
 /// anything goes wrong (the caller keeps the original photo).
 Future<String?> removeBackground(String imageBase64) async {
-  if (!aiConfigured) return null;
+  final photo = base64Decode(imageBase64);
+
+  // 1) Ask the AI for the outline (best for busy backgrounds).
+  if (aiConfigured) {
+    try {
+      final isPng = photo.length > 3 && photo[0] == 0x89 && photo[1] == 0x50;
+      final res = await http
+          .post(
+            Uri.parse(aiEndpoint),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'mode': 'cutout',
+              'image': imageBase64,
+              'mime': isPng ? 'image/png' : 'image/jpeg',
+            }),
+          )
+          .timeout(const Duration(seconds: 40));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final b = (data['box'] as List).map((n) => (n as num).toDouble()).toList();
+        final mask = base64Decode(data['mask'] as String);
+        final png = await _applyMask(photo, Rect.fromLTRB(b[0], b[1], b[2], b[3]), mask);
+        return base64Encode(png);
+      }
+    } catch (_) {
+      // fall through to the free method below
+    }
+  }
+
+  // 2) No AI (or it failed): remove the plain background around the edges.
   try {
-    final photo = base64Decode(imageBase64);
-    final isPng = photo.length > 3 && photo[0] == 0x89 && photo[1] == 0x50;
-    final res = await http
-        .post(
-          Uri.parse(aiEndpoint),
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({
-            'mode': 'cutout',
-            'image': imageBase64,
-            'mime': isPng ? 'image/png' : 'image/jpeg',
-          }),
-        )
-        .timeout(const Duration(seconds: 40));
-    if (res.statusCode != 200) return null;
-    final data = jsonDecode(res.body) as Map<String, dynamic>;
-    final b = (data['box'] as List).map((n) => (n as num).toDouble()).toList();
-    final mask = base64Decode(data['mask'] as String);
-    final png = await _applyMask(photo, Rect.fromLTRB(b[0], b[1], b[2], b[3]), mask);
-    return base64Encode(png);
+    return await _floodCutout(photo);
   } catch (_) {
     return null;
   }
@@ -43,6 +54,14 @@ Future<String?> removeBackground(String imageBase64) async {
 Future<Uint8List> _applyMask(Uint8List photo, Rect box, Uint8List maskPng) async {
   final img = await decodeImageFromList(photo);
   final mask = await decodeImageFromList(maskPng);
+  // A good mask is partly white and partly black. All-white or all-black means it failed.
+  final md = (await mask.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+  var on = 0;
+  for (var i = 0; i < md.lengthInBytes; i += 4) {
+    if (md.getUint8(i) > 127) on++;
+  }
+  final frac = on / (mask.width * mask.height);
+  if (frac < 0.06 || frac > 0.97) throw Exception('bad mask');
   final src = Rect.fromLTRB(box.left * img.width, box.top * img.height,
       box.right * img.width, box.bottom * img.height);
   // Keep files small: the longest side is at most 400 pixels.
@@ -163,6 +182,12 @@ Future<Uint8List> _keyOutGreen(Uint8List bytes) async {
     bg[p] = 1;
   }
 
+  return _cropAndEncode(px, w, h, bg);
+}
+
+/// Makes the pixels marked in [bg] transparent, crops to what is left and
+/// shrinks it to at most 400 pixels. Returns PNG bytes.
+Future<Uint8List> _cropAndEncode(Uint8List px, int w, int h, Uint8List bg) async {
   var minX = w, minY = h, maxX = -1, maxY = -1;
   for (var p = 0; p < w * h; p++) {
     if (bg[p] == 1) {
@@ -192,4 +217,86 @@ Future<Uint8List> _keyOutGreen(Uint8List bytes) async {
   final out = await recorder.endRecording().toImage(dst.width.round(), dst.height.round());
   final data = await out.toByteData(format: ui.ImageByteFormat.png);
   return data!.buffer.asUint8List();
+}
+
+/// Free fallback that needs no AI: the colour around the edge of the photo is
+/// treated as the background, and everything connected to it is removed.
+/// Works best on clothes laid on a plain floor, bed or wall.
+Future<String?> _floodCutout(Uint8List photo) async {
+  final img = await decodeImageFromList(photo);
+  final w = img.width, h = img.height;
+  final bd = (await img.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+  final px = bd.buffer.asUint8List(bd.offsetInBytes, bd.lengthInBytes);
+
+  // Average colour of the edge pixels is the background colour.
+  var r = 0, g = 0, b = 0, n = 0;
+  void sample(int x, int y) {
+    final i = (y * w + x) * 4;
+    r += px[i];
+    g += px[i + 1];
+    b += px[i + 2];
+    n++;
+  }
+
+  for (var x = 0; x < w; x += 2) {
+    sample(x, 0);
+    sample(x, h - 1);
+  }
+  for (var y = 0; y < h; y += 2) {
+    sample(0, y);
+    sample(w - 1, y);
+  }
+  final br = r / n, bgG = g / n, bb = b / n;
+  double dist(int p) {
+    final i = p * 4;
+    final dr = px[i] - br, dg = px[i + 1] - bgG, db = px[i + 2] - bb;
+    return sqrt(dr * dr + dg * dg + db * db);
+  }
+
+  // The more uneven the edge, the more forgiving we are.
+  var dev = 0.0, c = 0;
+  for (var x = 0; x < w; x += 2) {
+    dev += dist(x) + dist((h - 1) * w + x);
+    c += 2;
+  }
+  for (var y = 0; y < h; y += 2) {
+    dev += dist(y * w) + dist(y * w + w - 1);
+    c += 2;
+  }
+  final tol = (dev / c * 2.5).clamp(34.0, 75.0);
+
+  final bg = Uint8List(w * h);
+  final stack = <int>[];
+  void push(int x, int y) {
+    if (x < 0 || y < 0 || x >= w || y >= h) return;
+    final p = y * w + x;
+    if (bg[p] == 1 || dist(p) > tol) return;
+    bg[p] = 1;
+    stack.add(p);
+  }
+
+  for (var x = 0; x < w; x++) {
+    push(x, 0);
+    push(x, h - 1);
+  }
+  for (var y = 0; y < h; y++) {
+    push(0, y);
+    push(w - 1, y);
+  }
+  while (stack.isNotEmpty) {
+    final p = stack.removeLast();
+    final x = p % w, y = p ~/ w;
+    push(x + 1, y);
+    push(x - 1, y);
+    push(x, y + 1);
+    push(x, y - 1);
+  }
+
+  var removed = 0;
+  for (var p = 0; p < w * h; p++) {
+    removed += bg[p];
+  }
+  final share = removed / (w * h);
+  if (share < 0.08 || share > 0.9) return null; // nothing to cut, or it ate the clothes
+  return base64Encode(await _cropAndEncode(px, w, h, bg));
 }

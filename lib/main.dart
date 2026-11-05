@@ -421,9 +421,10 @@ class _AddItemPageState extends State<AddItemPage> {
   @override
   void initState() {
     super.initState();
-    if (aiConfigured) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _autoFill());
-    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (aiConfigured) _autoFill();
+      _removeBg(quiet: true); // cut the clothes out automatically
+    });
   }
 
   void _toast(String message) {
@@ -462,7 +463,7 @@ class _AddItemPageState extends State<AddItemPage> {
     }
   }
 
-  Future<void> _removeBg() async {
+  Future<void> _removeBg({bool quiet = false}) async {
     setState(() => _cutting = true);
     final cut = await removeBackground(widget.imageBase64);
     if (!mounted) return;
@@ -470,7 +471,7 @@ class _AddItemPageState extends State<AddItemPage> {
       _cutting = false;
       if (cut != null) _cut = cut;
     });
-    if (cut == null) _toast('Could not cut this one out. The original photo will be used.');
+    if (cut == null && !quiet) _toast('Could not cut this one out. The original photo will be used.');
   }
 
   Future<void> _flatten() async {

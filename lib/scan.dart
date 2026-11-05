@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
+import 'cutout.dart';
 import 'main.dart';
 import 'theme.dart';
 
@@ -100,13 +101,14 @@ class _ScanPageState extends State<ScanPage> {
   Future<void> _add() async {
     setState(() => _busy = true);
     for (final d in _found.where((d) => d.selected)) {
-      final png = await cropPhoto(widget.bytes, d.box);
+      final png = base64Encode(await cropPhoto(widget.bytes, d.box));
+      final cut = await removeBackground(png); // falls back to the plain crop
       await closet.add(ClosetItem(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
         name: d.name,
         category: d.category,
         color: d.color,
-        imageBase64: base64Encode(png),
+        imageBase64: cut ?? png,
       ));
     }
     if (!mounted) return;
