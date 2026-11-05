@@ -7,6 +7,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'avatar.dart';
+import 'cutout.dart';
 import 'scan.dart';
 import 'theme.dart';
 
@@ -75,6 +76,20 @@ class ClosetStore extends ChangeNotifier {
 
   Future<void> remove(ClosetItem item) async {
     items.remove(item);
+    notifyListeners();
+    await _save();
+  }
+
+  Future<void> replaceImage(ClosetItem item, String imageBase64) async {
+    final i = items.indexOf(item);
+    if (i < 0) return;
+    items[i] = ClosetItem(
+      id: item.id,
+      name: item.name,
+      category: item.category,
+      color: item.color,
+      imageBase64: imageBase64,
+    );
     notifyListeners();
     await _save();
   }
@@ -271,6 +286,40 @@ class _ClosetPageState extends State<ClosetPage> {
               Text(item.name, style: Theme.of(context).textTheme.headlineSmall),
               Text(item.meta),
               const SizedBox(height: 12),
+              FilledButton.tonalIcon(
+                onPressed: () async {
+                  Navigator.pop(sheet);
+                  final messenger = ScaffoldMessenger.of(context);
+                  messenger.showSnackBar(const SnackBar(content: Text('Removing the background...')));
+                  final cut = await removeBackground(item.imageBase64);
+                  messenger.hideCurrentSnackBar();
+                  if (cut == null) {
+                    messenger.showSnackBar(const SnackBar(content: Text('Could not cut this one out.')));
+                    return;
+                  }
+                  await closet.replaceImage(item, cut);
+                },
+                icon: const Icon(Icons.content_cut),
+                label: const Text('Remove background (AI)'),
+              ),
+              const SizedBox(height: 8),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  Navigator.pop(sheet);
+                  final messenger = ScaffoldMessenger.of(context);
+                  messenger.showSnackBar(const SnackBar(content: Text('Making a flat photo...')));
+                  final r = await flattenClothing(item.imageBase64);
+                  messenger.hideCurrentSnackBar();
+                  if (r.image == null) {
+                    messenger.showSnackBar(SnackBar(content: Text(r.error ?? 'Could not make a flat photo.')));
+                    return;
+                  }
+                  await closet.replaceImage(item, r.image!);
+                },
+                icon: const Icon(Icons.crop_portrait),
+                label: const Text('Make a flat photo (AI, needs billing)'),
+              ),
+              const SizedBox(height: 8),
               TextButton.icon(
                 style: TextButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.error),
                 onPressed: () {
@@ -366,6 +415,8 @@ class _AddItemPageState extends State<AddItemPage> {
   final _color = TextEditingController();
   String _category = categories.first;
   bool _busy = false;
+  String? _cut; // photo with the background removed
+  bool _cutting = false;
 
   @override
   void initState() {
@@ -411,13 +462,35 @@ class _AddItemPageState extends State<AddItemPage> {
     }
   }
 
+  Future<void> _removeBg() async {
+    setState(() => _cutting = true);
+    final cut = await removeBackground(widget.imageBase64);
+    if (!mounted) return;
+    setState(() {
+      _cutting = false;
+      if (cut != null) _cut = cut;
+    });
+    if (cut == null) _toast('Could not cut this one out. The original photo will be used.');
+  }
+
+  Future<void> _flatten() async {
+    setState(() => _cutting = true);
+    final r = await flattenClothing(widget.imageBase64);
+    if (!mounted) return;
+    setState(() {
+      _cutting = false;
+      if (r.image != null) _cut = r.image;
+    });
+    if (r.image == null) _toast(r.error ?? 'Could not make a flat photo.');
+  }
+
   Future<void> _save() async {
     await closet.add(ClosetItem(
       id: widget.id,
       name: _name.text.trim().isEmpty ? 'Untitled' : _name.text.trim(),
       category: _category,
       color: _color.text.trim(),
-      imageBase64: widget.imageBase64,
+      imageBase64: _cut ?? widget.imageBase64,
     ));
     if (!mounted) return;
     Navigator.pop(context);
@@ -435,7 +508,7 @@ class _AddItemPageState extends State<AddItemPage> {
             child: Container(
               height: 300,
               color: Colors.white,
-              child: Image.memory(base64Decode(widget.imageBase64), fit: BoxFit.contain),
+              child: Image.memory(base64Decode(_cut ?? widget.imageBase64), fit: BoxFit.contain),
             ),
           ),
           const SizedBox(height: 16),
@@ -453,6 +526,22 @@ class _AddItemPageState extends State<AddItemPage> {
               style: TextStyle(fontSize: 12),
               textAlign: TextAlign.center,
             ),
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: _cutting ? null : (_cut == null ? _removeBg : () => setState(() => _cut = null)),
+            icon: _cutting
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.content_cut),
+            label: Text(_cutting
+                ? 'Cutting it out'
+                : (_cut == null ? 'Remove background (AI)' : 'Background removed. Tap to undo')),
+          ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            onPressed: _cutting ? null : _flatten,
+            icon: const Icon(Icons.crop_portrait),
+            label: const Text('Make a flat photo (AI, needs billing)'),
           ),
           const SizedBox(height: 20),
           TextField(controller: _name, decoration: fieldDecoration('Name')),

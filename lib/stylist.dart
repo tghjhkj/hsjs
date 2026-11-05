@@ -13,9 +13,11 @@ const _skinNames = ['very light', 'light', 'medium', 'tan', 'brown', 'deep brown
 /// The model's settings in words. Only what the user picked; no photos are used.
 String looksText() {
   final s = avatarSettings;
-  final build = s.build < 0.95 ? 'slim' : (s.build > 1.1 ? 'fuller' : 'average');
+  const avg = [106.0, 92.0, 88.0, 100.0, 48.0];
+  String rel(int i) => (s.m[i] / avg[i] * 100).round().toString();
   final height = s.height < 0.9 ? 'shorter' : (s.height > 0.96 ? 'taller' : 'average height');
-  return 'body shape: ${s.body}; skin tone: ${_skinNames[s.skin]}; build: $build; height: $height';
+  return 'relative measurements (100 = average): shoulders ${rel(0)}, bust or chest ${rel(1)}, '
+      'waist ${rel(2)}, hips ${rel(3)}, thighs ${rel(4)}; skin tone: ${_skinNames[s.skin]}; height: $height';
 }
 
 List<Map<String, String>> _json(Iterable<ClosetItem> items) => [
