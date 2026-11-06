@@ -115,8 +115,30 @@ class ClosetStore extends ChangeNotifier {
     await _save();
   }
 
-  Future<void> remove(ClosetItem item) async {
-    items.remove(item);
+  Future<void> remove(ClosetItem item) => removeMany([item]);
+
+  /// Deletes pieces (and takes them off the model). Returns what's needed to undo it.
+  Future<List<(int, ClosetItem)>> removeMany(Iterable<ClosetItem> pieces) async {
+    final gone = <(int, ClosetItem)>[
+      for (final p in pieces)
+        if (items.indexOf(p) >= 0) (items.indexOf(p), p)
+    ]..sort((a, b) => a.$1.compareTo(b.$1));
+    final ids = {for (final g in gone) g.$2.id};
+    items.removeWhere((i) => ids.contains(i.id));
+    for (final slot in avatarOutfit.keys.toList()) {
+      if (ids.contains(avatarOutfit[slot]?.id)) avatarOutfit[slot] = null;
+    }
+    notifyListeners();
+    await _save();
+    return gone;
+  }
+
+  /// Puts deleted pieces back where they were (for Undo).
+  Future<void> restore(List<(int, ClosetItem)> gone) async {
+    for (final (at, item) in gone) {
+      if (items.any((i) => i.id == item.id)) continue;
+      items.insert(min(at, items.length), item);
+    }
     notifyListeners();
     await _save();
   }
@@ -226,32 +248,52 @@ class _HomePageState extends State<HomePage> {
 
 class ItemTile extends StatelessWidget {
   final ClosetItem item;
-  final VoidCallback? onTap;
-  const ItemTile(this.item, {super.key, this.onTap});
+  final VoidCallback? onTap, onLongPress;
+
+  /// Null when not selecting; otherwise whether this piece is ticked.
+  final bool? selected;
+  const ItemTile(this.item, {super.key, this.onTap, this.onLongPress, this.selected});
 
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context).textTheme;
+    final picked = selected == true;
     return GestureDetector(
       onTap: onTap,
+      onLongPress: onLongPress,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Expanded(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(14),
-              child: Container(
-                width: double.infinity,
-                color: Colors.white,
-                padding: const EdgeInsets.all(8),
-                child: Image.memory(
-                  base64Decode(item.imageBase64),
-                  gaplessPlayback: true,
-                  fit: BoxFit.contain,
-                  errorBuilder: (c, e, s) => const Icon(Icons.broken_image),
+            child: Stack(children: [
+              Positioned.fill(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(14),
+                  child: Container(
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(14),
+                      border: picked ? Border.all(color: aubergine, width: 3) : null,
+                    ),
+                    padding: const EdgeInsets.all(8),
+                    child: Image.memory(
+                      base64Decode(item.imageBase64),
+                      gaplessPlayback: true,
+                      fit: BoxFit.contain,
+                      errorBuilder: (c, e, s) => const Icon(Icons.broken_image),
+                    ),
+                  ),
                 ),
               ),
-            ),
+              if (selected != null)
+                Positioned(
+                  top: 6,
+                  left: 6,
+                  child: Icon(picked ? Icons.check_circle : Icons.radio_button_unchecked,
+                      color: picked ? aubergine : Colors.black38, size: 26),
+                ),
+            ]),
           ),
           const SizedBox(height: 8),
           Text(item.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: t.titleSmall),
@@ -272,6 +314,44 @@ class ClosetPage extends StatefulWidget {
 
 class _ClosetPageState extends State<ClosetPage> {
   String _filter = 'All';
+  Set<String>? _selected; // ids of ticked pieces while selecting (null when not selecting)
+
+  void _toggle(ClosetItem item) => setState(() {
+        final sel = _selected ??= {};
+        if (!sel.remove(item.id)) sel.add(item.id);
+      });
+
+  /// Deletes pieces, with Undo. Asks first when it's more than one.
+  Future<void> _delete(List<ClosetItem> pieces) async {
+    if (pieces.isEmpty) return;
+    if (pieces.length > 1) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (d) => AlertDialog(
+          title: Text('Delete ${pieces.length} pieces?'),
+          content: const Text('They’re also taken off the model and left out of saved outfits.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('Cancel')),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Theme.of(d).colorScheme.error),
+              onPressed: () => Navigator.pop(d, true),
+              child: const Text('Delete'),
+            ),
+          ],
+        ),
+      );
+      if (ok != true) return;
+    }
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final gone = await closet.removeMany(pieces);
+    setState(() => _selected = null);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(SnackBar(
+      content: Text(pieces.length == 1 ? 'Deleted “${pieces.first.name}”.' : 'Deleted ${pieces.length} pieces.'),
+      action: SnackBarAction(label: 'Undo', onPressed: () => closet.restore(gone)),
+    ));
+  }
   int? _flatLeft; // pieces still being turned flat (null when not running)
 
   /// Turns every piece that is still a plain photo into one that fits the model.
@@ -419,11 +499,11 @@ class _ClosetPageState extends State<ClosetPage> {
               TextButton.icon(
                 style: TextButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.error),
                 onPressed: () {
-                  closet.remove(item);
                   Navigator.pop(sheet);
+                  _delete([item]);
                 },
                 icon: const Icon(Icons.delete_outline),
-                label: const Text('Remove from closet'),
+                label: const Text('Delete from closet'),
               ),
             ],
           ),
@@ -434,12 +514,48 @@ class _ClosetPageState extends State<ClosetPage> {
 
   @override
   Widget build(BuildContext context) {
+    final selecting = _selected != null;
     return Scaffold(
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _chooseSource,
-        icon: const Icon(Icons.add),
-        label: const Text('Add piece'),
-      ),
+      floatingActionButton: selecting
+          ? null
+          : FloatingActionButton.extended(
+              onPressed: _chooseSource,
+              icon: const Icon(Icons.add),
+              label: const Text('Add piece'),
+            ),
+      bottomNavigationBar: !selecting
+          ? null
+          : SafeArea(
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                decoration: const BoxDecoration(
+                  color: Colors.white,
+                  border: Border(top: BorderSide(color: Colors.black12)),
+                ),
+                child: Row(children: [
+                  Expanded(
+                    child: Text('${_selected!.length} selected',
+                        maxLines: 1, overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.titleSmall),
+                  ),
+                  TextButton(
+                    onPressed: () => setState(() {
+                      final shown = _filter == 'All' ? closet.items : closet.items.where((i) => i.category == _filter);
+                      _selected = {for (final i in shown) i.id};
+                    }),
+                    child: const Text('Select all'),
+                  ),
+                  const SizedBox(width: 4),
+                  FilledButton.icon(
+                    style: FilledButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.error),
+                    onPressed: _selected!.isEmpty
+                        ? null
+                        : () => _delete(closet.items.where((i) => _selected!.contains(i.id)).toList()),
+                    icon: const Icon(Icons.delete_outline),
+                    label: const Text('Delete'),
+                  ),
+                ]),
+              ),
+            ),
       body: ListenableBuilder(
         listenable: closet,
         builder: (context, _) {
@@ -477,6 +593,22 @@ class _ClosetPageState extends State<ClosetPage> {
                     ),
                   ),
                 ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
+                child: Row(children: [
+                  Expanded(
+                    child: Text(
+                      selecting ? 'Tap pieces to select them' : '${closet.items.length} pieces',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                  TextButton.icon(
+                    onPressed: () => setState(() => _selected = selecting ? null : {}),
+                    icon: Icon(selecting ? Icons.close : Icons.checklist),
+                    label: Text(selecting ? 'Done' : 'Select'),
+                  ),
+                ]),
+              ),
               SizedBox(
                 height: 48,
                 child: ListView(
@@ -507,7 +639,15 @@ class _ClosetPageState extends State<ClosetPage> {
                           childAspectRatio: 0.72,
                         ),
                         itemCount: shown.length,
-                        itemBuilder: (context, i) => ItemTile(shown[i], onTap: () => _showItem(shown[i])),
+                        itemBuilder: (context, i) => ItemTile(
+                          shown[i],
+                          // Keyed by piece, so pictures never show in the wrong tile after a delete or undo.
+                          key: ValueKey(shown[i].id),
+                          selected: selecting ? _selected!.contains(shown[i].id) : null,
+                          onTap: () => selecting ? _toggle(shown[i]) : _showItem(shown[i]),
+                          // Press and hold to start selecting.
+                          onLongPress: () => _toggle(shown[i]),
+                        ),
                       ),
               ),
             ],

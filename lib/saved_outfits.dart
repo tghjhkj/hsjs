@@ -78,6 +78,59 @@ class SavedOutfitsStore extends ChangeNotifier {
     notifyListeners();
     await _save();
   }
+
+  /// Deletes outfits. Returns what's needed to undo it.
+  Future<List<(int, SavedOutfit)>> removeMany(Iterable<SavedOutfit> list) async {
+    final gone = <(int, SavedOutfit)>[
+      for (final o in list)
+        if (outfits.contains(o)) (outfits.indexOf(o), o)
+    ]..sort((a, b) => a.$1.compareTo(b.$1));
+    outfits.removeWhere((o) => gone.any((g) => g.$2 == o));
+    notifyListeners();
+    await _save();
+    return gone;
+  }
+
+  /// Puts deleted outfits back where they were (for Undo).
+  Future<void> restore(List<(int, SavedOutfit)> gone) async {
+    for (final (at, o) in gone) {
+      if (outfits.contains(o)) continue;
+      outfits.insert(at.clamp(0, outfits.length), o);
+    }
+    notifyListeners();
+    await _save();
+  }
+}
+
+/// Deletes saved outfits with an Undo message (and asks first for more than one).
+Future<void> deleteSavedOutfits(BuildContext context, List<SavedOutfit> list) async {
+  if (list.isEmpty) return;
+  if (list.length > 1) {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (d) => AlertDialog(
+        title: Text('Delete all ${list.length} saved outfits?'),
+        content: const Text('The clothes stay in your closet.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(d, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Theme.of(d).colorScheme.error),
+            onPressed: () => Navigator.pop(d, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+  }
+  if (!context.mounted) return;
+  final messenger = ScaffoldMessenger.of(context);
+  final gone = await savedOutfits.removeMany(list);
+  messenger.hideCurrentSnackBar();
+  messenger.showSnackBar(SnackBar(
+    content: Text(list.length == 1 ? 'Deleted “${list.first.name}”.' : 'Deleted ${list.length} saved outfits.'),
+    action: SnackBarAction(label: 'Undo', onPressed: () => savedOutfits.restore(gone)),
+  ));
 }
 
 final savedOutfits = SavedOutfitsStore();
@@ -199,12 +252,7 @@ class SavedOutfitsSection extends StatelessWidget {
             title: Text('Delete', style: TextStyle(color: Theme.of(context).colorScheme.error)),
             onTap: () {
               Navigator.pop(sheet);
-              savedOutfits.remove(o);
-              ScaffoldMessenger.of(context).hideCurrentSnackBar();
-              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text('Deleted “${o.name}”.'),
-                action: SnackBarAction(label: 'Undo', onPressed: () => savedOutfits.add(o.name, pieces)),
-              ));
+              deleteSavedOutfits(context, [o]);
             },
           ),
         ]),
@@ -227,7 +275,15 @@ class SavedOutfitsSection extends StatelessWidget {
         return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Padding(
             padding: const EdgeInsets.only(top: 24, bottom: 8),
-            child: Text('Saved outfits${list.isEmpty ? '' : ' (${list.length})'}', style: t.titleMedium),
+            child: Row(children: [
+              Expanded(child: Text('Saved outfits${list.isEmpty ? '' : ' (${list.length})'}', style: t.titleMedium)),
+              if (list.length > 1)
+                TextButton(
+                  style: TextButton.styleFrom(foregroundColor: Theme.of(context).colorScheme.error),
+                  onPressed: () => deleteSavedOutfits(context, List.of(list)),
+                  child: const Text('Delete all'),
+                ),
+            ]),
           ),
           if (list.isEmpty)
             const Text('Outfits you save here or on the Model tab show up in this list.')
@@ -246,7 +302,12 @@ class SavedOutfitsSection extends StatelessWidget {
                     child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                       Row(children: [
                         Expanded(child: Text(o.name, style: t.titleSmall, maxLines: 1, overflow: TextOverflow.ellipsis)),
-                        const Icon(Icons.more_horiz, size: 20),
+                        IconButton(
+                          tooltip: 'Delete “${o.name}”',
+                          visualDensity: VisualDensity.compact,
+                          icon: const Icon(Icons.delete_outline),
+                          onPressed: () => deleteSavedOutfits(context, [o]),
+                        ),
                       ]),
                       const SizedBox(height: 8),
                       SizedBox(
