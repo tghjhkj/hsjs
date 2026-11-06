@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'avatar.dart';
@@ -25,6 +26,13 @@ List<Map<String, String>> _json(Iterable<ClosetItem> items) => [
       for (final i in items) {'id': i.id, 'name': i.name, 'category': i.category, 'color': i.color}
     ];
 
+/// The closet pieces the AI stylist may choose from (without the samples when
+/// [useSamples] is off).
+List<ClosetItem> stylistChoices({required bool useSamples}) => [
+      for (final i in closet.items)
+        if (useSamples || !i.id.startsWith('sample-')) i
+    ];
+
 class StylistPanel extends StatefulWidget {
   final VoidCallback onChanged;
   const StylistPanel({super.key, required this.onChanged});
@@ -37,6 +45,24 @@ class _StylistPanelState extends State<StylistPanel> {
   final _note = TextEditingController();
   bool _busy = false;
   String? _reason;
+  bool _useSamples = true; // let the AI pick from the sample pieces too
+
+  @override
+  void initState() {
+    super.initState();
+    SharedPreferences.getInstance().then((p) {
+      final v = p.getBool('ai_use_samples');
+      if (v != null && mounted) setState(() => _useSamples = v);
+    });
+  }
+
+  Future<void> _setUseSamples(bool v) async {
+    setState(() => _useSamples = v);
+    final p = await SharedPreferences.getInstance();
+    await p.setBool('ai_use_samples', v);
+  }
+
+  List<ClosetItem> get _choices => stylistChoices(useSamples: _useSamples);
 
   /// The occasion note, with today's weather in front when a city is saved.
   String _noteWithWeather() => '${weather.today?.forStylist ?? ''} ${_note.text.trim()}'.trim();
@@ -51,8 +77,7 @@ class _StylistPanelState extends State<StylistPanel> {
     setState(() => _busy = true);
     try {
       final res = await http
-          .post(Uri.parse(aiEndpoint),
-              headers: {'Content-Type': 'application/json'}, body: jsonEncode(body))
+          .post(Uri.parse(aiEndpoint), headers: {'Content-Type': 'application/json'}, body: jsonEncode(body))
           .timeout(const Duration(seconds: 45));
       if (res.statusCode != 200) throw Exception('${res.statusCode} ${res.body}');
       return jsonDecode(res.body) as Map<String, dynamic>;
@@ -65,15 +90,18 @@ class _StylistPanelState extends State<StylistPanel> {
   }
 
   Future<void> _styleMe() async {
-    if (closet.items.isEmpty) {
-      _toast('Add some clothes to your closet first.');
+    final choices = _choices;
+    if (choices.isEmpty) {
+      _toast(closet.items.isEmpty
+          ? 'Add some clothes to your closet first.'
+          : 'You haven’t added any clothes of your own yet. Add some, or let the AI use the sample pieces.');
       return;
     }
     final data = await _ask({
       'mode': 'style',
       'looks': looksText(),
       'note': _noteWithWeather(),
-      'items': _json(closet.items),
+      'items': _json(choices),
     });
     if (data == null || !mounted) return;
     final ids = (data['ids'] as List? ?? []).map((e) => e.toString()).toSet();
@@ -104,7 +132,7 @@ class _StylistPanelState extends State<StylistPanel> {
       'looks': looksText(),
       'note': _noteWithWeather(),
       'worn': _json(worn),
-      'items': _json(closet.items.where((i) => !wornIds.contains(i.id))),
+      'items': _json(_choices.where((i) => !wornIds.contains(i.id))),
     });
     if (data == null || !mounted) return;
     _showMatches(data);
@@ -144,7 +172,8 @@ class _StylistPanelState extends State<StylistPanel> {
                           margin: const EdgeInsets.only(right: 8),
                           child: Column(children: [
                             Expanded(child: Image.memory(base64Decode(it.imageBase64), fit: BoxFit.cover)),
-                            Text(it.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11)),
+                            Text(it.name,
+                                maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 11)),
                           ]),
                         ),
                       ),
@@ -179,52 +208,66 @@ class _StylistPanelState extends State<StylistPanel> {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(top: 16),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(24)),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('AI stylist', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
-            TextField(
-              controller: _note,
-              decoration: const InputDecoration(
-                labelText: 'Occasion or what you want (optional)',
-                hintText: 'e.g. dinner date, or shoes and jewelry',
-                filled: true,
-                fillColor: paper,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.all(Radius.circular(14)),
-                  borderSide: BorderSide.none,
+    // A Material (not a coloured box) so the switch's tap ripple shows on the card.
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(24),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('AI stylist', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _note,
+                decoration: const InputDecoration(
+                  labelText: 'Occasion or what you want (optional)',
+                  hintText: 'e.g. dinner date, or shoes and jewelry',
+                  filled: true,
+                  fillColor: paper,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.all(Radius.circular(14)),
+                    borderSide: BorderSide.none,
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 8),
-            Wrap(spacing: 8, runSpacing: 8, children: [
-              FilledButton.icon(
-                onPressed: _busy ? null : _styleMe,
-                icon: const Icon(Icons.auto_awesome),
-                label: const Text('Style me'),
+              const SizedBox(height: 8),
+              Wrap(spacing: 8, runSpacing: 8, children: [
+                FilledButton.icon(
+                  onPressed: _busy ? null : _styleMe,
+                  icon: const Icon(Icons.auto_awesome),
+                  label: const Text('Style me'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: _busy ? null : _findMatches,
+                  icon: const Icon(Icons.search),
+                  label: const Text('Find matching pieces'),
+                ),
+              ]),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                title: const Text('Use the sample pieces'),
+                subtitle: Text(_useSamples
+                    ? 'The AI can pick samples as well as your own clothes.'
+                    : 'The AI only picks from clothes you added.'),
+                value: _useSamples,
+                onChanged: _setUseSamples,
               ),
-              OutlinedButton.icon(
-                onPressed: _busy ? null : _findMatches,
-                icon: const Icon(Icons.search),
-                label: const Text('Find matching pieces'),
+              if (_busy) const Padding(padding: EdgeInsets.only(top: 8), child: LinearProgressIndicator()),
+              if (_reason != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_reason!)),
+              const Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: Text(
+                  'Sends your model settings and item names (no photos) to an AI service.',
+                  style: TextStyle(fontSize: 12),
+                ),
               ),
-            ]),
-            if (_busy) const Padding(padding: EdgeInsets.only(top: 8), child: LinearProgressIndicator()),
-            if (_reason != null) Padding(padding: const EdgeInsets.only(top: 8), child: Text(_reason!)),
-            const Padding(
-              padding: EdgeInsets.only(top: 8),
-              child: Text(
-                'Sends your model settings and item names (no photos) to an AI service.',
-                style: TextStyle(fontSize: 12),
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
