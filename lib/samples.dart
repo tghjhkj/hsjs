@@ -1,3 +1,5 @@
+import 'package:shared_preferences/shared_preferences.dart';
+
 import 'main.dart';
 
 // Sample pieces for trying the model (a proof of concept). Each picture is
@@ -11,25 +13,45 @@ class _Sample {
   const _Sample(this.id, this.name, this.category, this.color, this.spec, this.png);
 }
 
-/// Adds the sample pieces to the closet, skipping any that are already there.
-/// Returns how many were added.
-Future<int> addSamplePieces() async {
-  var added = 0;
-  for (final s in _samples) {
-    final id = 'sample-${s.id}';
-    if (closet.items.any((i) => i.id == id)) continue;
-    await closet.add(ClosetItem(
-      id: id,
+/// Bumped whenever new sample pieces are added, so they appear once in existing closets.
+const sampleSet = 3;
+
+ClosetItem _item(_Sample s) => ClosetItem(
+      id: 'sample-${s.id}',
       name: s.name,
       category: s.category,
       color: s.color,
       imageBase64: s.png,
       spec: Map<String, dynamic>.from(s.spec),
       fitted: true,
-    ));
-    added++;
+    );
+
+/// The built-in picture for a sample piece (samples aren't saved with their
+/// pictures, since they are part of the app), or null for other pieces.
+String? samplePicture(String id) {
+  if (!id.startsWith('sample-')) return null;
+  for (final s in _samples) {
+    if ('sample-${s.id}' == id) return s.png;
   }
-  return added;
+  return null;
+}
+
+/// Adds the sample pieces to the closet, skipping any that are already there.
+/// Returns how many were added.
+Future<int> addSamplePieces() async {
+  final have = {for (final i in closet.items) i.id};
+  final missing = [for (final s in _samples) if (!have.contains('sample-${s.id}')) _item(s)];
+  if (missing.isNotEmpty) await closet.addAll(missing);
+  return missing.length;
+}
+
+/// Puts every sample piece in the closet the first time the app opens (and adds
+/// new ones once after an update). Pieces you remove later stay removed.
+Future<void> ensureSamplePieces() async {
+  final prefs = await SharedPreferences.getInstance();
+  if ((prefs.getInt('sample_set') ?? 0) >= sampleSet) return;
+  await addSamplePieces();
+  await prefs.setInt('sample_set', sampleSet);
 }
 
 const _samples = <_Sample>[

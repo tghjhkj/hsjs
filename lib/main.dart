@@ -80,19 +80,36 @@ class ClosetStore extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_key);
     if (raw == null) return;
-    items
-      ..clear()
-      ..addAll((jsonDecode(raw) as List).map((e) => ClosetItem.fromJson(e as Map<String, dynamic>)));
+    items.clear();
+    for (final e in jsonDecode(raw) as List) {
+      final j = Map<String, dynamic>.from(e as Map);
+      // Sample pieces are saved without their picture; it comes from the app itself.
+      final builtIn = samplePicture(j['id'] as String);
+      if (builtIn != null) j['imageBase64'] = builtIn;
+      if ((j['imageBase64'] as String? ?? '').isEmpty) continue;
+      items.add(ClosetItem.fromJson(j));
+    }
     notifyListeners();
   }
 
   Future<void> _save() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_key, jsonEncode(items.map((i) => i.toJson()).toList()));
+    await prefs.setString(
+        _key,
+        jsonEncode([
+          for (final i in items) {...i.toJson(), if (samplePicture(i.id) != null) 'imageBase64': ''}
+        ]));
   }
 
   Future<void> add(ClosetItem item) async {
     items.add(item);
+    notifyListeners();
+    await _save();
+  }
+
+  /// Adds several pieces and saves once.
+  Future<void> addAll(List<ClosetItem> list) async {
+    items.addAll(list);
     notifyListeners();
     await _save();
   }
@@ -151,6 +168,13 @@ Future<bool> makeFlat(ClosetItem item) async {
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await closet.load();
+  // Every sample piece is in the closet from the first launch.
+  await ensureSamplePieces();
+  // Start the model in something simple, so the Model tab isn't empty.
+  for (final (slot, id) in [('Tops', 'sample-tee'), ('Bottoms', 'sample-jeans'), ('Shoes', 'sample-sneakers')]) {
+    final piece = closet.items.where((i) => i.id == id).firstOrNull;
+    if (piece != null) wearPiece(slot, piece);
+  }
   await avatarSettings.load();
   await weather.load();
   runApp(const MuseApp());
