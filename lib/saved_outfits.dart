@@ -140,18 +140,20 @@ List<ClosetItem> currentModelOutfit() {
   final hasDress = avatarOutfit['Dresses'] != null;
   return [
     for (final slot in outfitSlots)
-      if (avatarOutfit[slot] != null && !(hasDress && (slot == 'Tops' || slot == 'Bottoms'))) avatarOutfit[slot]!
+      if (avatarOutfit[slot] != null && !(hasDress && (slot == 'Tops' || slot == 'Bottoms'))) avatarOutfit[slot]!,
+    for (final k in accessoryKinds)
+      if (avatarAccessories[k] != null) avatarAccessories[k]!,
   ];
 }
 
-/// Dresses the model in [pieces] (anything that isn't worn on the model, like
-/// accessories, is skipped).
+/// Dresses the model in [pieces], accessories included.
 void putOnModel(List<ClosetItem> pieces) {
   for (final slot in outfitSlots) {
     avatarOutfit[slot] = null;
   }
+  avatarAccessories.clear();
   for (final p in pieces) {
-    if (outfitSlots.contains(p.category)) wearPiece(p.category, p);
+    if (outfitSlots.contains(p.category) || p.category == 'Accessories') wearPiece(p.category, p);
   }
 }
 

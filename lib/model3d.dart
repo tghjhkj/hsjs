@@ -141,6 +141,23 @@ class _Mesh {
     }
   }
 
+  /// A flat picture card facing forward (seen from both sides), for a bag.
+  void card(Rect r, double z, {double bias = 0}) {
+    final start = count;
+    for (final (x, y) in [(r.left, r.top), (r.right, r.top), (r.left, r.bottom), (r.right, r.bottom)]) {
+      pos.addAll([x, y, z]);
+      nrm.addAll([0, 0, 1]);
+      uv.addAll([x * _texScale, y * _texScale]);
+      col.addAll([1, 1, 1]);
+    }
+    tri.addAll([start, start + 2, start + 1, start + 1, start + 2, start + 3]);
+    for (var t = 0; t < 2; t++) {
+      triNrm.addAll([0, 0, 1]);
+      triCull.add(false);
+      triBias.add(bias);
+    }
+  }
+
   /// An ellipsoid (or a band of one, from latitude [t0] to [t1], 0 = top).
   void blob(double cx, double cy, double cz, double rx, double ry, double rz,
       {double t0 = 0,
@@ -167,7 +184,7 @@ class _Mesh {
 
 /// Builds the model: body, face and hair, then the clothes as shells just outside
 /// the body. [skirt] (optional) are rings for a skirt or dress hanging free.
-_Mesh _buildModel(AvatarSettings s, List<_Ring>? skirt) {
+_Mesh _buildModel(AvatarSettings s, List<_Ring>? skirt, [Rect? bag]) {
   final m = _Mesh();
   final g = _Geo(s.m, s.arms);
   final sh = g.sh, hi = g.hi, th = g.th, k = g.k;
@@ -263,6 +280,11 @@ _Mesh _buildModel(AvatarSettings s, List<_Ring>? skirt) {
     final ca = 120 + side * (2 + th / 2) - 2 * side, ha = th * 0.22;
     m.blob(ca, 451, 6, ha + 3.4, 11, 17, textured: true, bias: clothBias, steps: 10, seg: 16);
   }
+  // Accessories: a shell over the head (hat, glasses), the neck (scarf), and a flat
+  // card for a bag held at the hand.
+  m.blob(120, 50, 0, 28.6, 34.2, 30.6, textured: true, head: h, bias: 3, steps: 14, seg: 28);
+  m.tube(const [_Ring(120, 64, 11.5, 12), _Ring(120, 100, 12, 12.5)], textured: true, bias: clothBias);
+  if (bag != null) m.card(bag, 4, bias: 4);
   if (skirt != null && skirt.length > 2) {
     m.tube(skirt, textured: true, wrap: 0.86, seg: 32, cull: false, bias: clothBias);
   }
@@ -270,12 +292,12 @@ _Mesh _buildModel(AvatarSettings s, List<_Ring>? skirt) {
 }
 
 /// The clothes, drawn flat and fitted (no outlines), as the 3D model's picture.
-ui.Image _clothesPicture(Map<String, FlatSpec?> specs, Map<String, _Photo?> photos) {
+ui.Image _clothesPicture(Map<String, FlatSpec?> specs, Map<String, _Photo?> photos, Map<String, ui.Image?> accessories) {
   final rec = ui.PictureRecorder();
   final c = Canvas(rec);
   c.scale(_texScale);
   c.drawRect(const Rect.fromLTWH(0, 0, 4, 4), Paint()..color = Colors.white);
-  _ClothesPainter(avatarSettings, specs, photos, edges: false).paint(c, const Size(240, 480));
+  _ClothesPainter(avatarSettings, specs, photos, edges: false, accessories: accessories).paint(c, const Size(240, 480));
   return rec.endRecording().toImageSync((240 * _texScale).round(), (480 * _texScale).round());
 }
 
@@ -322,6 +344,7 @@ class _Model3DViewState extends State<Model3DView> {
   String? _key;
   _Mesh? _mesh;
   ui.Image? _picture;
+  Rect? _bag; // where a bag held at the hand sits
   final _focus = FocusNode();
 
   void _ready() {
@@ -342,17 +365,19 @@ class _Model3DViewState extends State<Model3DView> {
     final key = [
       s.m.join(','), s.arms, s.head, s.skin, s.hair, s.hairColor, s.eyes,
       for (final slot in outfitSlots) '${avatarOutfit[slot]?.id}:${looks.photos[slot] != null}',
+      for (final k in accessoryKinds) '${avatarAccessories[k]?.id}:${looks.accessories[k] != null}',
     ].join('|');
     if (key == _key) return;
     _key = key;
     _picture?.dispose();
-    _picture = _clothesPicture(looks.specs, looks.photos);
-    _mesh = _buildModel(s, null);
+    _picture = _clothesPicture(looks.specs, looks.photos, looks.accessories);
+    _bag = looks.accessories['bag'] == null ? null : _ClothesPainter.accessoryBox(_Geo(s.m, s.arms), 'bag', looks.accessories['bag']!);
+    _mesh = _buildModel(s, null, _bag);
     // A skirt or dress needs measuring from the picture, which takes a moment.
     final picture = _picture!;
     _skirtRings(picture, s.m[3]).then((rings) {
       if (!mounted || _key != key || rings == null) return;
-      setState(() => _mesh = _buildModel(avatarSettings, rings));
+      setState(() => _mesh = _buildModel(avatarSettings, rings, _bag));
     });
   }
 

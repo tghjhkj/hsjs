@@ -81,6 +81,10 @@ class _StylistPanelState extends State<StylistPanel> {
     for (final slot in outfitSlots) {
       avatarOutfit[slot] = chosen.where((i) => i.category == slot).firstOrNull;
     }
+    avatarAccessories.clear();
+    for (final a in chosen.where((i) => i.category == 'Accessories')) {
+      wearPiece('Accessories', a);
+    }
     setState(() {
       final names = chosen.map((i) => i.name).join(', ');
       _reason = '${data['reason'] ?? ''}${names.isEmpty ? '' : '\nOutfit: $names'}'.trim();
@@ -129,7 +133,7 @@ class _StylistPanelState extends State<StylistPanel> {
                     for (final it in mine)
                       GestureDetector(
                         onTap: () {
-                          if (outfitSlots.contains(it.category)) {
+                          if (outfitSlots.contains(it.category) || it.category == 'Accessories') {
                             wearPiece(it.category, it);
                             widget.onChanged();
                           }

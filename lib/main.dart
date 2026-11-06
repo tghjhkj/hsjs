@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:math';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -128,6 +129,9 @@ class ClosetStore extends ChangeNotifier {
     for (final slot in avatarOutfit.keys.toList()) {
       if (ids.contains(avatarOutfit[slot]?.id)) avatarOutfit[slot] = null;
     }
+    for (final k in avatarAccessories.keys.toList()) {
+      if (ids.contains(avatarAccessories[k]?.id)) avatarAccessories[k] = null;
+    }
     notifyListeners();
     await _save();
     return gone;
@@ -162,6 +166,41 @@ class ClosetStore extends ChangeNotifier {
 }
 
 final closet = ClosetStore();
+
+/// True for a front-facing cut-out: a picture whose edges are see-through
+/// (like the sample pieces), with something solid in the middle.
+Future<bool> isCutOut(String imageBase64) async {
+  try {
+    final bytes = base64Decode(imageBase64);
+    if (bytes.length < 8 || bytes[0] != 0x89 || bytes[1] != 0x50) return false; // only PNG keeps transparency
+    final img = await decodeImageFromList(bytes);
+    final bd = await img.toByteData(format: ui.ImageByteFormat.rawRgba);
+    if (bd == null) return false;
+    final w = img.width, h = img.height;
+    var edge = 0, clear = 0;
+    int alpha(int x, int y) => bd.getUint8((y * w + x) * 4 + 3);
+    for (var x = 0; x < w; x += 3) {
+      edge += 2;
+      if (alpha(x, 0) < 20) clear++;
+      if (alpha(x, h - 1) < 20) clear++;
+    }
+    for (var y = 0; y < h; y += 3) {
+      edge += 2;
+      if (alpha(0, y) < 20) clear++;
+      if (alpha(w - 1, y) < 20) clear++;
+    }
+    var solid = 0, seen = 0;
+    for (var y = h ~/ 4; y < h * 3 ~/ 4; y += 4) {
+      for (var x = w ~/ 4; x < w * 3 ~/ 4; x += 4) {
+        seen++;
+        if (alpha(x, y) > 200) solid++;
+      }
+    }
+    return edge > 0 && clear / edge > 0.6 && seen > 0 && solid / seen > 0.2;
+  } catch (_) {
+    return false;
+  }
+}
 
 /// The picture saved for a piece: a front-facing photo that fits the model when
 /// the image AI can make one, otherwise a flat drawing of [spec].
@@ -314,6 +353,31 @@ class ClosetPage extends StatefulWidget {
 
 class _ClosetPageState extends State<ClosetPage> {
   String _filter = 'All';
+  bool _showSamples = true; // sample pieces can be hidden from the closet (not deleted)
+
+  @override
+  void initState() {
+    super.initState();
+    SharedPreferences.getInstance().then((p) {
+      final v = p.getBool('closet_show_samples');
+      if (v != null && mounted) setState(() => _showSamples = v);
+    });
+  }
+
+  Future<void> _setShowSamples(bool v) async {
+    setState(() {
+      _showSamples = v;
+      _selected?.removeWhere((id) => !v && id.startsWith('sample-'));
+    });
+    final p = await SharedPreferences.getInstance();
+    await p.setBool('closet_show_samples', v);
+  }
+
+  /// The pieces on screen: the chosen category, without samples when they're hidden.
+  List<ClosetItem> get _visible => [
+        for (final i in closet.items)
+          if ((_filter == 'All' || i.category == _filter) && (_showSamples || !i.id.startsWith('sample-'))) i
+      ];
   Set<String>? _selected; // ids of ticked pieces while selecting (null when not selecting)
 
   void _toggle(ClosetItem item) => setState(() {
@@ -539,8 +603,7 @@ class _ClosetPageState extends State<ClosetPage> {
                   ),
                   TextButton(
                     onPressed: () => setState(() {
-                      final shown = _filter == 'All' ? closet.items : closet.items.where((i) => i.category == _filter);
-                      _selected = {for (final i in shown) i.id};
+                      _selected = {for (final i in _visible) i.id};
                     }),
                     child: const Text('Select all'),
                   ),
@@ -568,9 +631,9 @@ class _ClosetPageState extends State<ClosetPage> {
               onAction: _chooseSource,
             );
           }
-          final shown = _filter == 'All'
-              ? closet.items
-              : closet.items.where((i) => i.category == _filter).toList();
+          final shown = _visible;
+          final samples = closet.items.where((i) => i.id.startsWith('sample-')).length;
+          final mine = closet.items.length - samples;
           final photos = closet.items.where((i) => i.spec == null).length;
           return Column(
             children: [
@@ -598,10 +661,23 @@ class _ClosetPageState extends State<ClosetPage> {
                 child: Row(children: [
                   Expanded(
                     child: Text(
-                      selecting ? 'Tap pieces to select them' : '${closet.items.length} pieces',
+                      selecting
+                          ? 'Tap pieces to select them'
+                          : (_showSamples || samples == 0
+                              ? '${closet.items.length} pieces'
+                              : '$mine of yours'),
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ),
+                  if (samples > 0)
+                    FilterChip(
+                      label: const Text('Samples'),
+                      tooltip: _showSamples ? 'Hide the sample pieces' : 'Show the sample pieces',
+                      selected: _showSamples,
+                      showCheckmark: true,
+                      onSelected: _setShowSamples,
+                      visualDensity: VisualDensity.compact,
+                    ),
                   TextButton.icon(
                     onPressed: () => setState(() => _selected = selecting ? null : {}),
                     icon: Icon(selecting ? Icons.close : Icons.checklist),
@@ -629,7 +705,23 @@ class _ClosetPageState extends State<ClosetPage> {
               ),
               Expanded(
                 child: shown.isEmpty
-                    ? Center(child: Text('Nothing in $_filter yet.'))
+                    ? Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Column(mainAxisSize: MainAxisSize.min, children: [
+                            Text(
+                              !_showSamples && mine == 0
+                                  ? 'The sample pieces are hidden, and you haven’t added any of your own yet.'
+                                  : 'Nothing in $_filter yet.',
+                              textAlign: TextAlign.center,
+                            ),
+                            if (!_showSamples && samples > 0) ...[
+                              const SizedBox(height: 8),
+                              TextButton(onPressed: () => _setShowSamples(true), child: const Text('Show samples')),
+                            ],
+                          ]),
+                        ),
+                      )
                     : GridView.builder(
                         padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
                         gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
@@ -678,13 +770,24 @@ class _AddItemPageState extends State<AddItemPage> {
   String? _fitted; // front-facing photo that fits the model
   String? _fitNote; // why there is no fitted photo
   bool _useFitted = true;
+  String? _kind; // for accessories: hat, glasses, necklace, scarf, belt, watch or bag (null = guess from the name)
+  bool _cutOut = false; // the picture already has a see-through background (used as it is)
 
   String? get _result => (_useFitted && _fitted != null) ? _fitted : _drawn;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // A front-facing cut-out (see-through background) is used as it is: no AI photo needed.
+      if (await isCutOut(widget.imageBase64)) {
+        if (!mounted) return;
+        setState(() {
+          _cutOut = true;
+          _fitted = widget.imageBase64;
+          _useFitted = true;
+        });
+      }
       if (aiConfigured) {
         _autoFill();
       } else {
@@ -736,7 +839,7 @@ class _AddItemPageState extends State<AddItemPage> {
     } finally {
       if (mounted) setState(() => _busy = false);
     }
-    await _fit();
+    if (!_cutOut) await _fit();
   }
 
   /// Asks the image AI for the front-facing version that fits the model.
@@ -783,13 +886,18 @@ class _AddItemPageState extends State<AddItemPage> {
     if (_spec == null || _drawn == null) await _guessDrawn();
     final spec = _spec!.withCategory(_category);
     final fitted = _useFitted && _fitted != null;
+    final name = _name.text.trim().isEmpty ? 'Untitled' : _name.text.trim();
+    final accessory = _category == 'Accessories';
+    final kind = _kind ??
+        accessoryKind(ClosetItem(id: '', name: name, category: _category, color: '', imageBase64: ''));
     await closet.add(ClosetItem(
       id: widget.id,
-      name: _name.text.trim().isEmpty ? 'Untitled' : _name.text.trim(),
+      name: name,
       category: _category,
       color: _color.text.trim(),
-      imageBase64: fitted ? _fitted! : await renderFlat(spec),
-      spec: spec.toJson(),
+      // An accessory without a front-facing photo keeps your photo (a garment drawing wouldn't fit it).
+      imageBase64: fitted ? _fitted! : (accessory ? widget.imageBase64 : await renderFlat(spec)),
+      spec: {...spec.toJson(), if (accessory) 'kind': kind},
       fitted: fitted,
     ));
     if (!mounted) return;
@@ -845,7 +953,16 @@ class _AddItemPageState extends State<AddItemPage> {
                 onSelectionChanged: (v) => setState(() => _useFitted = v.first),
               ),
             ),
-          if (_fitNote != null && !working)
+          if (_cutOut)
+            const Padding(
+              padding: EdgeInsets.only(bottom: 12),
+              child: Text(
+                'This picture already has a see-through background, so it’s used as it is. No AI photo needed.',
+                style: TextStyle(fontSize: 12),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          if (_fitNote != null && !working && !_cutOut)
             Padding(
               padding: const EdgeInsets.only(bottom: 12),
               child: Text(
@@ -895,6 +1012,20 @@ class _AddItemPageState extends State<AddItemPage> {
                 ),
             ],
           ),
+          if (_category == 'Accessories') ...[
+            const Label('Type'),
+            Wrap(spacing: 8, runSpacing: 4, children: [
+              for (final (label, k) in const [
+                ('Hat', 'hat'), ('Glasses', 'glasses'), ('Necklace', 'necklace'), ('Scarf', 'scarf'),
+                ('Belt', 'belt'), ('Watch', 'watch'), ('Bag', 'bag'),
+              ])
+                ChoiceChip(
+                  label: Text(label),
+                  selected: (_kind ?? accessoryKind(ClosetItem(id: '', name: _name.text, category: '', color: '', imageBase64: ''))) == k,
+                  onSelected: (_) => setState(() => _kind = k),
+                ),
+            ]),
+          ],
           const SizedBox(height: 24),
           FilledButton(onPressed: working ? null : _save, child: const Text('Save to closet')),
         ],

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'avatar.dart';
 import 'main.dart';
 import 'theme.dart';
 
@@ -184,6 +185,10 @@ double warmth(ClosetItem i) {
       return 2;
     case 'Jackets':
       return named(['coat', 'puffer', 'parka', 'wool', 'down', 'fleece']) ? 3 : 2;
+    case 'Accessories':
+      if (named(['beanie', 'knit', 'wool', 'scarf']) && !named(['silk'])) return 3;
+      if (named(['sun', 'straw', 'cap', 'sunglasses', 'shades'])) return 0;
+      return 1.2;
     case 'Shoes':
       if (s['style'] == 'boots' || named(['boot'])) return 2.5;
       if (s['style'] == 'low' || named(['sandal', 'flip', 'flat', 'slide'])) return 0.3;
@@ -210,7 +215,7 @@ List<ClosetItem> pickOutfit(List<ClosetItem> items, WeatherToday? w, Random rng)
   if (w == null) {
     final dress = pick('Dresses');
     final base = (dress != null && rng.nextBool()) ? [dress] : [pick('Tops'), pick('Bottoms')];
-    return [...base, pick('Jackets'), pick('Shoes'), pick('Accessories')].whereType<ClosetItem>().toList();
+    return [...base, pick('Jackets'), pick('Shoes'), ..._pickAccessories(items, null, rng)].whereType<ClosetItem>().toList();
   }
   final t = _target[w.band]!;
   final dress = pick('Dresses', t);
@@ -218,7 +223,28 @@ List<ClosetItem> pickOutfit(List<ClosetItem> items, WeatherToday? w, Random rng)
   final wantJacket = w.rainy || w.band == 'cool' || w.band == 'cold' || (w.band == 'mild' && rng.nextBool());
   final jacket = wantJacket ? pick('Jackets', t) : null;
   final shoes = pick('Shoes', w.rainy ? max(t, 2.5) : t);
-  return [...base, jacket, shoes, pick('Accessories')].whereType<ClosetItem>().toList();
+  return [...base, jacket, shoes, ..._pickAccessories(items, t, rng)].whereType<ClosetItem>().toList();
+}
+
+/// Up to two accessories of different kinds; with weather, ones that suit it
+/// (a sun hat and sunglasses when it's hot, a beanie and scarf when it's cold).
+List<ClosetItem> _pickAccessories(List<ClosetItem> items, double? target, Random rng) {
+  final all = items.where((i) => i.category == 'Accessories').toList();
+  final out = <ClosetItem>[];
+  final kinds = <String>{};
+  for (var n = 0; n < 2 && all.isNotEmpty; n++) {
+    if (n == 1 && rng.nextBool()) break;
+    var list = all.where((i) => !kinds.contains(accessoryKind(i))).toList();
+    if (list.isEmpty) break;
+    if (target != null) {
+      final best = list.map((i) => (warmth(i) - target).abs()).reduce(min);
+      list = list.where((i) => (warmth(i) - target).abs() <= best + 0.8).toList();
+    }
+    final a = list[rng.nextInt(list.length)];
+    out.add(a);
+    kinds.add(accessoryKind(a));
+  }
+  return out;
 }
 
 /// One line saying why this outfit suits the weather.
