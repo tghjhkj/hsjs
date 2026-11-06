@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'flat_art.dart';
 import 'main.dart';
+import 'saved_outfits.dart';
 import 'stylist.dart';
 import 'theme.dart';
 
@@ -1495,6 +1496,15 @@ class _AvatarPageState extends State<AvatarPage> {
               // Not const on purpose: a const widget is never rebuilt, so the model would ignore the sliders.
               // Only one of the two views exists at a time.
               child: _in3d ? Model3DView(key: const ValueKey('3d')) : AvatarView(key: const ValueKey('2d')),
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerRight,
+              child: OutlinedButton.icon(
+                onPressed: currentModelOutfit().isEmpty ? null : () => saveOutfit(context, currentModelOutfit()),
+                icon: const Icon(Icons.bookmark_add_outlined),
+                label: const Text('Save outfit'),
+              ),
             ),
             const Label('Body type'),
             SegmentedButton<String>(

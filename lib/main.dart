@@ -10,6 +10,7 @@ import 'avatar.dart';
 import 'cutout.dart';
 import 'flat_art.dart';
 import 'samples.dart';
+import 'saved_outfits.dart';
 import 'scan.dart';
 import 'theme.dart';
 import 'weather.dart';
@@ -177,6 +178,7 @@ Future<void> main() async {
   }
   await avatarSettings.load();
   await weather.load();
+  await savedOutfits.load();
   runApp(const MuseApp());
 }
 
@@ -793,63 +795,63 @@ class _OutfitPageState extends State<OutfitPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      child: Column(
-        children: [
-          const WeatherCard(),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: FilledButton.icon(
-              onPressed: closet.items.isEmpty ? null : _generate,
-              icon: const Icon(Icons.auto_awesome),
-              label: const Text('Generate outfit'),
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+      children: [
+        const WeatherCard(),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+            onPressed: closet.items.isEmpty ? null : _generate,
+            icon: const Icon(Icons.auto_awesome),
+            label: const Text('Generate outfit'),
+          ),
+        ),
+        if (_reason != null)
+          Padding(padding: const EdgeInsets.only(top: 10), child: Text(_reason!, textAlign: TextAlign.center)),
+        const SizedBox(height: 12),
+        if (_outfit.isEmpty)
+          const EmptyState(
+            icon: Icons.auto_awesome,
+            title: 'No outfit yet',
+            message: 'Generate a combination from your closet, then save the ones you like.',
+          )
+        else ...[
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 200,
+              mainAxisSpacing: 16,
+              crossAxisSpacing: 12,
+              childAspectRatio: 0.72,
             ),
+            itemCount: _outfit.length,
+            itemBuilder: (context, i) => ItemTile(_outfit[i]),
           ),
-          if (_reason != null)
-            Padding(padding: const EdgeInsets.only(top: 10), child: Text(_reason!, textAlign: TextAlign.center)),
-          const SizedBox(height: 12),
-          Expanded(
-            child: _outfit.isEmpty
-                ? const EmptyState(
-                    icon: Icons.auto_awesome,
-                    title: 'No outfit yet',
-                    message: 'Add a few pieces to your closet, then generate a combination.',
-                  )
-                : GridView.builder(
-                    gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                      maxCrossAxisExtent: 200,
-                      mainAxisSpacing: 16,
-                      crossAxisSpacing: 12,
-                      childAspectRatio: 0.72,
-                    ),
-                    itemCount: _outfit.length,
-                    itemBuilder: (context, i) => ItemTile(_outfit[i]),
-                  ),
-          ),
-          if (_outfit.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: SizedBox(
-                width: double.infinity,
-                child: FilledButton.tonalIcon(
-                  onPressed: () {
-                    for (final slot in outfitSlots) {
-                      avatarOutfit[slot] = null;
-                    }
-                    for (final it in _outfit) {
-                      if (outfitSlots.contains(it.category)) wearPiece(it.category, it);
-                    }
-                    widget.onWear?.call();
-                  },
-                  icon: const Icon(Icons.person_outline),
-                  label: const Text('Put it on the model'),
-                ),
+          const SizedBox(height: 8),
+          Row(children: [
+            Expanded(
+              child: FilledButton.tonalIcon(
+                onPressed: () {
+                  putOnModel(_outfit);
+                  widget.onWear?.call();
+                },
+                icon: const Icon(Icons.person_outline),
+                label: const Text('Put it on the model'),
               ),
             ),
+            const SizedBox(width: 8),
+            OutlinedButton.icon(
+              onPressed: () => saveOutfit(context, _outfit),
+              icon: const Icon(Icons.bookmark_add_outlined),
+              label: const Text('Save'),
+            ),
+          ]),
         ],
-      ),
+        SavedOutfitsSection(onWear: widget.onWear),
+      ],
     );
   }
 }
