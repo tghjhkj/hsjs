@@ -1,14 +1,18 @@
 import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'flat_art.dart';
 import 'main.dart';
 import 'stylist.dart';
 import 'theme.dart';
+
+part 'model3d.dart';
 
 // Starting points. Order: shoulders, bust or chest, waist, hips, thighs.
 const bodyTypes = <String, List<double>>{
@@ -739,37 +743,48 @@ class _Photo {
 final _photos = <String, _Photo>{};
 final _decoding = <String>{};
 
+/// The prepared photo of [it], or null while it is still being read (then
+/// [onReady] is called once it is ready).
+_Photo? _photoFor(ClosetItem? it, VoidCallback onReady) {
+  if (it == null || !it.fitted) return null;
+  final key = '${it.id}:${it.imageBase64.length}';
+  final hit = _photos[key];
+  if (hit != null) return hit;
+  if (_decoding.add(key)) {
+    decodeImageFromList(base64Decode(it.imageBase64)).then(_Photo.of).then((p) {
+      _photos[key] = p;
+      _decoding.remove(key);
+      onReady();
+    }, onError: (_) {
+      _decoding.remove(key);
+    });
+  }
+  return null;
+}
+
+/// What the model is wearing: each piece's shape, and its photo when it has one.
+/// Pieces without a saved look (older photo items) get a plain shape from their
+/// category and color.
+({Map<String, FlatSpec?> specs, Map<String, _Photo?> photos}) _wornLooks(VoidCallback onReady) => (
+      specs: {
+        for (final slot in outfitSlots)
+          slot: avatarOutfit[slot] == null
+              ? null
+              : FlatSpec.of(avatarOutfit[slot]!.spec, avatarOutfit[slot]!.category, avatarOutfit[slot]!.color),
+      },
+      photos: {for (final slot in outfitSlots) slot: _photoFor(avatarOutfit[slot], onReady)},
+    );
+
 class _AvatarViewState extends State<AvatarView> {
-  _Photo? _photo(ClosetItem? it) {
-    if (it == null || !it.fitted) return null;
-    final key = '${it.id}:${it.imageBase64.length}';
-    final hit = _photos[key];
-    if (hit != null) return hit;
-    if (_decoding.add(key)) {
-      decodeImageFromList(base64Decode(it.imageBase64)).then(_Photo.of).then((p) {
-        _photos[key] = p;
-        _decoding.remove(key);
-        if (mounted) setState(() {});
-      }, onError: (_) {
-        _decoding.remove(key);
-      });
-    }
-    return null;
+  void _ready() {
+    if (mounted) setState(() {});
   }
 
   @override
   Widget build(BuildContext context) {
     final s = avatarSettings;
-    // Every piece has a flat shape fitted to the body. Pieces without a saved
-    // look (older photo items) get a plain one from their category and color.
-    final specs = <String, FlatSpec?>{
-      for (final slot in outfitSlots)
-        slot: avatarOutfit[slot] == null
-            ? null
-            : FlatSpec.of(avatarOutfit[slot]!.spec, avatarOutfit[slot]!.category, avatarOutfit[slot]!.color),
-    };
-    // Pieces with a front-facing photo show the real piece, placed over the same shape.
-    final photos = <String, _Photo?>{for (final slot in outfitSlots) slot: _photo(avatarOutfit[slot])};
+    final looks = _wornLooks(_ready);
+    final specs = looks.specs, photos = looks.photos;
     return FittedBox(
       child: SizedBox(
         width: 240,
@@ -898,7 +913,11 @@ class _ClothesPainter extends CustomPainter {
   final AvatarSettings s;
   final Map<String, FlatSpec?> specs;
   final Map<String, _Photo?> photos;
-  _ClothesPainter(this.s, this.specs, this.photos);
+
+  /// False for the 3D view's texture: no outline or shadow, since the clothes
+  /// are wrapped around the body there.
+  final bool edges;
+  _ClothesPainter(this.s, this.specs, this.photos, {this.edges = true});
 
   /// Straight lines through the points ([t, y] pairs, t from 0 at the top of the
   /// photo to 1 at the bottom) that say where each row of the photo lands on the model.
@@ -1006,7 +1025,7 @@ class _ClothesPainter extends CustomPainter {
     final area = box.inflate(8);
 
     // Soft shadow, then a thin dark edge (both are the piece's own shape, darkened and blurred).
-    for (final (color, blur, dy) in [(const Color(0x47000000), 3.0, 1.5), (const Color(0x80231914), 0.7, 0.0)]) {
+    for (final (color, blur, dy) in edges ? [(const Color(0x47000000), 3.0, 1.5), (const Color(0x80231914), 0.7, 0.0)] : const <(Color, double, double)>[]) {
       c.saveLayer(
           area.translate(0, dy),
           Paint()
@@ -1149,7 +1168,8 @@ class _ClothesPainter extends CustomPainter {
         [120 - bb, 120 + bb]
       ];
       final end = sleeveTo;
-      if (end != null && y >= 96 && y <= end + 1) {
+      // Sleeves start a little above the arm so the round of the shoulder is covered.
+      if (end != null && y >= 92 && y <= end + 1) {
         final along = ((y - 96) / max(1.0, end - 96)).clamp(0.0, 1.0);
         for (final side in [-1.0, 1.0]) {
           // Sleeves open up toward the hem and sit slightly out from the arm. Near the
@@ -1215,7 +1235,10 @@ class _ClothesPainter extends CustomPainter {
       }
     }
     final layout = _torsoLayout(g, photo, slot, sp, cover: cover);
-    _fit(c, photo, layout.yAt, layout.partsAt, taper: photo.shoulderTaper);
+    // The collar stays narrow, but by the shoulders the piece is full width, so the
+    // top of the arms never shows through.
+    _fit(c, photo, layout.yAt, layout.partsAt,
+        taper: (j) => max(photo.shoulderTaper(j), ((layout.yAt(photo.t(j)) - 89) / 7).clamp(0.0, 1.0)));
   }
 
   void _upper(Canvas c, _Geo g, FlatSpec sp, String slot) => _torsoPiece(c, g, sp, slot);
@@ -1298,6 +1321,21 @@ class _ClothesPainter extends CustomPainter {
       });
       return;
     }
+    if (style == 'ankle') {
+      // High-tops and hiking boots: up over the ankle, then the foot.
+      const ease = 3.0;
+      _fit(c, photo, _rows([[0, 414], [0.6, 440], [1, 462]]), (y) {
+        if (y >= 438) return feet();
+        return _merge([
+          for (final side in [-1.0, 1.0])
+            () {
+              final a = g.legOuter(side, y) + side * ease, b = g.legInner(side, y) - side * ease;
+              return [min(a, b), max(a, b)];
+            }()
+        ]);
+      });
+      return;
+    }
     _fit(c, photo, _rows(style == 'low' ? [[0, 444], [1, 462]] : [[0, 432], [1, 462]]), (y) => feet());
   }
 
@@ -1306,13 +1344,13 @@ class _ClothesPainter extends CustomPainter {
     final g = _Geo(s.m, s.arms);
     final hasDress = avatarOutfit['Dresses'] != null;
 
+    // Shoes first, so skirts, dresses and trouser hems fall over them.
+    final shoes = specs['Shoes'];
+    if (shoes != null) _shoes(canvas, g, shoes);
+
     // Bottoms (not under a dress)
     final bottoms = specs['Bottoms'];
     if (!hasDress && bottoms != null) _bottoms(canvas, g, bottoms);
-
-    // Shoes
-    final shoes = specs['Shoes'];
-    if (shoes != null) _shoes(canvas, g, shoes);
 
     // Top, or a dress instead
     if (!hasDress) {
@@ -1342,6 +1380,7 @@ class AvatarPage extends StatefulWidget {
 class _AvatarPageState extends State<AvatarPage> {
   static const slots = outfitSlots;
   final _rng = Random();
+  bool _in3d = false;
 
   void _shuffle() {
     setState(() {
@@ -1440,12 +1479,22 @@ class _AvatarPageState extends State<AvatarPage> {
         return ListView(
           padding: const EdgeInsets.all(16),
           children: [
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(value: false, label: Text('2D')),
+                ButtonSegment(value: true, label: Text('3D')),
+              ],
+              selected: {_in3d},
+              onSelectionChanged: (v) => setState(() => _in3d = v.first),
+            ),
+            const SizedBox(height: 12),
             Container(
               height: 400,
               padding: const EdgeInsets.symmetric(vertical: 16),
               decoration: BoxDecoration(color: lilac, borderRadius: BorderRadius.circular(24)),
               // Not const on purpose: a const widget is never rebuilt, so the model would ignore the sliders.
-              child: AvatarView(),
+              // Only one of the two views exists at a time.
+              child: _in3d ? Model3DView(key: const ValueKey('3d')) : AvatarView(key: const ValueKey('2d')),
             ),
             const Label('Body type'),
             SegmentedButton<String>(

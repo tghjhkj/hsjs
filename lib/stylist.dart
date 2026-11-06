@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'avatar.dart';
 import 'main.dart';
 import 'theme.dart';
+import 'weather.dart';
 
 const _skinNames = ['very light', 'light', 'medium', 'tan', 'brown', 'deep brown'];
 
@@ -36,6 +37,9 @@ class _StylistPanelState extends State<StylistPanel> {
   final _note = TextEditingController();
   bool _busy = false;
   String? _reason;
+
+  /// The occasion note, with today's weather in front when a city is saved.
+  String _noteWithWeather() => '${weather.today?.forStylist ?? ''} ${_note.text.trim()}'.trim();
 
   void _toast(String m) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(m)));
 
@@ -68,7 +72,7 @@ class _StylistPanelState extends State<StylistPanel> {
     final data = await _ask({
       'mode': 'style',
       'looks': looksText(),
-      'note': _note.text.trim(),
+      'note': _noteWithWeather(),
       'items': _json(closet.items),
     });
     if (data == null || !mounted) return;
@@ -94,7 +98,7 @@ class _StylistPanelState extends State<StylistPanel> {
     final data = await _ask({
       'mode': 'match',
       'looks': looksText(),
-      'note': _note.text.trim(),
+      'note': _noteWithWeather(),
       'worn': _json(worn),
       'items': _json(closet.items.where((i) => !wornIds.contains(i.id))),
     });

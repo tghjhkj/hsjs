@@ -12,6 +12,7 @@ import 'flat_art.dart';
 import 'samples.dart';
 import 'scan.dart';
 import 'theme.dart';
+import 'weather.dart';
 
 const categories = ['Tops', 'Bottoms', 'Dresses', 'Jackets', 'Shoes', 'Accessories'];
 
@@ -151,6 +152,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await closet.load();
   await avatarSettings.load();
+  await weather.load();
   runApp(const MuseApp());
 }
 
@@ -747,21 +749,21 @@ class OutfitPage extends StatefulWidget {
 class _OutfitPageState extends State<OutfitPage> {
   final _rng = Random();
   List<ClosetItem> _outfit = [];
+  String? _reason; // why the outfit suits today's weather
 
-  ClosetItem? _pick(String category) {
-    final list = closet.items.where((i) => i.category == category).toList();
-    return list.isEmpty ? null : list[_rng.nextInt(list.length)];
+  @override
+  void initState() {
+    super.initState();
+    weather.refresh(); // at most once an hour
   }
 
+  /// A random outfit, suited to today's weather when a city is saved.
   void _generate() {
-    final dress = _pick('Dresses');
-    final base = (dress != null && _rng.nextBool())
-        ? <ClosetItem?>[dress]
-        : <ClosetItem?>[_pick('Tops'), _pick('Bottoms')];
+    final w = weather.today;
+    final outfit = pickOutfit(closet.items, w, _rng);
     setState(() {
-      _outfit = [...base, _pick('Jackets'), _pick('Shoes'), _pick('Accessories')]
-          .whereType<ClosetItem>()
-          .toList();
+      _outfit = outfit;
+      _reason = (w != null && outfit.isNotEmpty) ? outfitReason(w, outfit) : null;
     });
   }
 
@@ -771,6 +773,8 @@ class _OutfitPageState extends State<OutfitPage> {
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
       child: Column(
         children: [
+          const WeatherCard(),
+          const SizedBox(height: 12),
           SizedBox(
             width: double.infinity,
             child: FilledButton.icon(
@@ -779,6 +783,8 @@ class _OutfitPageState extends State<OutfitPage> {
               label: const Text('Generate outfit'),
             ),
           ),
+          if (_reason != null)
+            Padding(padding: const EdgeInsets.only(top: 10), child: Text(_reason!, textAlign: TextAlign.center)),
           const SizedBox(height: 12),
           Expanded(
             child: _outfit.isEmpty
