@@ -226,6 +226,10 @@ List<ClosetItem> pickOutfit(List<ClosetItem> items, WeatherToday? w, Random rng)
   return [...base, jacket, shoes, ..._pickAccessories(items, t, rng)].whereType<ClosetItem>().toList();
 }
 
+/// One or two accessories for today's weather [w] (or any, without weather).
+List<ClosetItem> pickAccessoriesFor(List<ClosetItem> items, WeatherToday? w, Random rng) =>
+    _pickAccessories(items, w == null ? null : _target[w.band], rng);
+
 /// Up to two accessories of different kinds; with weather, ones that suit it
 /// (a sun hat and sunglasses when it's hot, a beanie and scarf when it's cold).
 List<ClosetItem> _pickAccessories(List<ClosetItem> items, double? target, Random rng) {
