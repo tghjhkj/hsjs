@@ -13,6 +13,12 @@ import 'weather.dart';
 
 const _skinNames = ['very light', 'light', 'medium', 'tan', 'brown', 'deep brown'];
 
+/// A colour picked in the colour square, in words (by how light it is).
+String _skinWord(Color c) {
+  final l = c.computeLuminance();
+  return l > 0.6 ? 'very light' : l > 0.45 ? 'light' : l > 0.3 ? 'medium' : l > 0.18 ? 'tan' : l > 0.09 ? 'brown' : 'deep brown';
+}
+
 /// The model's settings in words. Only what the user picked; no photos are used.
 String looksText() {
   final s = avatarSettings;
@@ -20,7 +26,7 @@ String looksText() {
   String rel(int i) => (s.m[i] / avg[i] * 100).round().toString();
   final height = s.height < 0.9 ? 'shorter' : (s.height > 0.96 ? 'taller' : 'average height');
   return 'relative measurements (100 = average): shoulders ${rel(0)}, bust or chest ${rel(1)}, '
-      'waist ${rel(2)}, hips ${rel(3)}, thighs ${rel(4)}; skin tone: ${_skinNames[s.skin]}; height: $height';
+      'waist ${rel(2)}, hips ${rel(3)}, thighs ${rel(4)}; skin tone: ${s.skinCustom == null ? _skinNames[s.skin] : _skinWord(s.skinTone)}; height: $height';
 }
 
 List<Map<String, String>> _json(Iterable<ClosetItem> items) => [
@@ -87,9 +93,9 @@ class _StylistPanelState extends State<StylistPanel> {
 
   List<ClosetItem> get _choices => stylistChoices(useSamples: _useSamples);
 
-  /// The occasion note, with today's weather in front when a city is saved.
-  String _noteWithWeather({bool forMatches = false}) =>
-      [_accessoryNote(forMatches: forMatches), weather.today?.forStylist ?? '', _note.text.trim()]
+  /// What to tell the AI: the accessories choice and your note. (Not the weather:
+  /// the stylist dresses for your note, not the forecast.)
+  String _noteWithWeather({bool forMatches = false}) => [_accessoryNote(forMatches: forMatches), _note.text.trim()]
           .where((t) => t.isNotEmpty)
           .join(' ');
 
@@ -148,7 +154,7 @@ class _StylistPanelState extends State<StylistPanel> {
     if (_accessories == 'none') picked = [];
     // Asked for accessories but the AI left them out: add one or two that suit the day.
     final added = _accessories == 'include' && picked.isEmpty
-        ? pickAccessoriesFor(choices, weather.today, Random())
+        ? pickAccessoriesFor(choices, null, Random())
         : <ClosetItem>[];
     for (final a in [...picked, ...added]) {
       wearPiece('Accessories', a);

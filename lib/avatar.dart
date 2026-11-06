@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'color_picker.dart';
 import 'flat_art.dart';
 import 'main.dart';
 import 'saved_outfits.dart';
@@ -99,6 +100,13 @@ class AvatarSettings extends ChangeNotifier {
   int hair = 0, hairColor = 1, eyes = 0;
   double head = 1.0, arms = 1.0;
 
+  /// Colours picked in the colour square (null = use the chosen swatch).
+  Color? skinCustom, hairCustom, eyesCustom;
+
+  Color get skinTone => skinCustom ?? skinTones[skin];
+  Color get hairTone => hairCustom ?? hairColors[hairColor];
+  Color get eyeTone => eyesCustom ?? eyeColors[eyes];
+
   Future<void> load() async {
     final p = await SharedPreferences.getInstance();
     body = p.getString('av_body') ?? body;
@@ -119,6 +127,10 @@ class AvatarSettings extends ChangeNotifier {
     eyes = (p.getInt('av_eyes') ?? eyes).clamp(0, eyeColors.length - 1);
     head = (p.getDouble('av_head') ?? head).clamp(0.9, 1.15);
     arms = (p.getDouble('av_arms') ?? arms).clamp(0.8, 1.5);
+    Color? custom(String key) => p.getInt(key) == null ? null : Color(p.getInt(key)!);
+    skinCustom = custom('av_skin_custom');
+    hairCustom = custom('av_hair_custom');
+    eyesCustom = custom('av_eyes_custom');
   }
 
   Future<void> _save() async {
@@ -132,6 +144,17 @@ class AvatarSettings extends ChangeNotifier {
     await p.setInt('av_eyes', eyes);
     await p.setDouble('av_head', head);
     await p.setDouble('av_arms', arms);
+    for (final (key, c) in [
+      ('av_skin_custom', skinCustom),
+      ('av_hair_custom', hairCustom),
+      ('av_eyes_custom', eyesCustom),
+    ]) {
+      if (c == null) {
+        await p.remove(key);
+      } else {
+        await p.setInt(key, c.toARGB32());
+      }
+    }
   }
 
   /// Picking a body type resets every measurement to that starting point.
@@ -154,8 +177,28 @@ class AvatarSettings extends ChangeNotifier {
     _save();
   }
 
+  /// Colours from the colour square (null goes back to the swatch).
+  void setSkinCustom(Color? c) {
+    skinCustom = c;
+    notifyListeners();
+    _save();
+  }
+
+  void setHairCustom(Color? c) {
+    hairCustom = c;
+    notifyListeners();
+    _save();
+  }
+
+  void setEyesCustom(Color? c) {
+    eyesCustom = c;
+    notifyListeners();
+    _save();
+  }
+
   void setSkin(int i) {
     skin = i;
+    skinCustom = null;
     notifyListeners();
     _save();
   }
@@ -168,12 +211,14 @@ class AvatarSettings extends ChangeNotifier {
 
   void setHairColor(int i) {
     hairColor = i;
+    hairCustom = null;
     notifyListeners();
     _save();
   }
 
   void setEyes(int i) {
     eyes = i;
+    eyesCustom = null;
     notifyListeners();
     _save();
   }
@@ -199,8 +244,8 @@ class _BodyPainter extends CustomPainter {
 
   static const _warm = Color(0xFF4A2A1C);
   List<double> get m => s.m;
-  Color get skin => skinTones[s.skin];
-  Color get hair => hairColors[s.hairColor];
+  Color get skin => s.skinTone;
+  Color get hair => s.hairTone;
   Color get line => Color.lerp(skin, const Color(0xFF3A2015), 0.42)!;
   Color _mix(Color a, Color b, double t) => Color.lerp(a, b, t)!;
 
@@ -307,7 +352,7 @@ class _BodyPainter extends CustomPainter {
       c.drawPath(eye, Paint()..color = const Color(0xFFFBFAF8));
       c.save();
       c.clipPath(eye);
-      c.drawCircle(Offset(x, 52), 2.5, Paint()..color = eyeColors[s.eyes]);
+      c.drawCircle(Offset(x, 52), 2.5, Paint()..color = s.eyeTone);
       c.drawCircle(Offset(x, 52), 1.2, Paint()..color = const Color(0xFF16100D));
       c.drawCircle(Offset(x + 0.9, 51.1), 0.75, Paint()..color = const Color(0xE6FFFFFF));
       c.restore();
@@ -364,69 +409,129 @@ class _BodyPainter extends CustomPainter {
     c.drawLine(const Offset(cx + 5.4, 66.6), const Offset(cx + 6.2, 65.8), corner);
   }
 
+  /// Strands: soft darker lines that follow the hair's flow ([x0, y0, cx, cy, x1, y1] curves).
+  void _strands(Canvas c, List<List<double>> lines) {
+    final p = Path();
+    for (final l in lines) {
+      p
+        ..moveTo(l[0], l[1])
+        ..quadraticBezierTo(l[2], l[3], l[4], l[5]);
+    }
+    c.drawPath(p, _soft(_mix(hair, Colors.black, 0.32), 0.8, 0.55));
+  }
+
   void _hairFront(Canvas c) {
     if (s.hair == 4) return;
     if (s.hair == 3) {
-      _hairFill(
-        c,
-        Path()
-          ..moveTo(96, 47)
-          ..cubicTo(96, 28, 107, 21, 120, 21)
-          ..cubicTo(133, 21, 144, 28, 144, 47)
-          ..cubicTo(139, 37, 131, 33, 120, 33)
-          ..cubicTo(109, 33, 101, 37, 96, 47)
-          ..close(),
-        opacity: 0.82,
-      );
+      // Buzz cut: close to the head, with a soft stubble texture.
+      final buzz = Path()
+        ..moveTo(96, 48)
+        ..cubicTo(96, 28, 107, 20, 120, 20)
+        ..cubicTo(133, 20, 144, 28, 144, 48)
+        ..cubicTo(141, 40, 135, 35, 128, 33)
+        ..cubicTo(122, 32, 118, 32, 112, 33)
+        ..cubicTo(105, 35, 99, 40, 96, 48)
+        ..close();
+      c.drawPath(buzz, Paint()..color = _mix(hair, skin, 0.35).withValues(alpha: 0.9));
+      c.save();
+      c.clipPath(buzz);
+      final dot = Paint()..color = _mix(hair, Colors.black, 0.2).withValues(alpha: 0.35);
+      var seed = 11;
+      double rnd() {
+        seed = (seed * 9301 + 49297) % 233280;
+        return seed / 233280;
+      }
+
+      for (var k = 0; k < 220; k++) {
+        c.drawRect(Rect.fromLTWH(96 + rnd() * 48, 20 + rnd() * 28, 0.7, 0.7), dot);
+      }
+      c.restore();
       return;
     }
-    if (s.hair == 1) {
+    if (s.hair == 2) {
+      // Bun: a top knot with wrapped strands, the rest combed back.
+      _hairFill(c, Path()..addOval(Rect.fromCenter(center: const Offset(120, 13), width: 23, height: 21)));
+      _strands(c, const [
+        [111, 9, 120, 5, 129, 10],
+        [110, 15, 120, 11, 130, 16],
+        [112, 20, 120, 17, 128, 21],
+      ]);
       _hairFill(
         c,
         Path()
-          ..moveTo(96.5, 76)
-          ..cubicTo(90, 50, 95, 19, 120, 18)
-          ..cubicTo(145, 19, 150, 50, 143.5, 76)
-          ..cubicTo(143, 60, 142, 48, 137, 41)
-          ..cubicTo(129, 32, 111, 32, 104, 40)
-          ..cubicTo(99, 46, 97, 58, 96.5, 76)
+          ..moveTo(95, 52)
+          ..cubicTo(93, 30, 104, 17, 120, 17)
+          ..cubicTo(136, 17, 147, 30, 145, 52)
+          ..cubicTo(142, 42, 136, 35, 128, 32)
+          ..cubicTo(124, 31, 116, 31, 112, 32)
+          ..cubicTo(104, 35, 98, 42, 95, 52)
           ..close(),
       );
+      _strands(c, const [
+        [100, 46, 104, 28, 116, 20],
+        [110, 34, 112, 24, 118, 19],
+        [130, 34, 128, 24, 122, 19],
+        [140, 46, 136, 28, 124, 20],
+      ]);
+      c.drawRect(const Rect.fromLTWH(114, 21, 12, 2.6), Paint()..color = _mix(hair, Colors.black, 0.35));
+    } else if (s.hair == 1) {
+      // Long: the top with a side-swept fringe, and curtains framing the face.
+      _hairFill(
+        c,
+        Path()
+          ..moveTo(90, 102)
+          ..cubicTo(86, 84, 86, 62, 89, 48)
+          ..cubicTo(92, 28, 104, 14, 121, 14)
+          ..cubicTo(138, 14, 150, 28, 152, 48)
+          ..cubicTo(155, 62, 154, 84, 150, 102)
+          ..quadraticBezierTo(147, 104, 143, 101)
+          ..cubicTo(145, 88, 145, 70, 144, 58)
+          ..cubicTo(143, 48, 141, 42, 138, 38)
+          ..cubicTo(131, 33, 120, 33, 113, 38)
+          ..cubicTo(107, 42, 103, 47, 100, 52)
+          ..cubicTo(98, 62, 97, 84, 97, 101)
+          ..quadraticBezierTo(93, 104, 90, 102)
+          ..close(),
+      );
+      _strands(c, const [
+        [113, 16, 124, 20, 138, 30],
+        [109, 18, 116, 28, 124, 34],
+        [104, 22, 96, 40, 92, 60],
+        [92, 60, 89, 80, 92, 100],
+        [140, 22, 149, 38, 148, 60],
+        [148, 60, 151, 80, 148, 100],
+      ]);
     } else {
-      // Short (and the base of the bun): a side part with a soft sweep across the forehead.
+      // Short: fuller on top, a side part, and a fringe swept across the forehead.
       _hairFill(
         c,
         Path()
-          ..moveTo(95, 58)
-          ..cubicTo(91, 34, 102, 18, 120, 18)
-          ..cubicTo(138, 18, 149, 34, 145, 58)
-          ..cubicTo(144, 49, 142, 42, 138, 38)
-          ..cubicTo(131, 32, 120, 33, 112, 37)
-          ..cubicTo(105, 40, 99, 46, 95, 58)
+          ..moveTo(94, 58)
+          ..cubicTo(88, 44, 90, 22, 106, 15)
+          ..cubicTo(116, 10, 132, 11, 140, 17)
+          ..cubicTo(150, 24, 153, 42, 147, 58)
+          ..cubicTo(146, 50, 144, 44, 141, 40)
+          ..cubicTo(134, 34, 122, 34, 114, 39)
+          ..cubicTo(108, 43, 104, 48, 101, 52)
+          ..cubicTo(100, 47, 99, 44, 98, 47)
+          ..cubicTo(97, 51, 96, 55, 94, 58)
           ..close(),
       );
-      c.drawPath(
-        Path()
-          ..moveTo(112, 37)
-          ..quadraticBezierTo(122, 27, 136, 26)
-          ..moveTo(105, 42)
-          ..quadraticBezierTo(110, 30, 124, 23)
-          ..moveTo(140, 40)
-          ..quadraticBezierTo(143, 33, 141, 27),
-        _soft(_mix(hair, Colors.black, 0.3), 0.8, 0.6),
-      );
+      _strands(c, const [
+        [113, 16, 124, 20, 138, 30],
+        [110, 18, 118, 28, 128, 35],
+        [108, 19, 110, 32, 112, 40],
+        [104, 22, 101, 36, 103, 48],
+        [140, 22, 146, 32, 146, 46],
+      ]);
     }
-    // A soft shine.
+    // A soft shine across the crown.
     c.drawPath(
       Path()
-        ..moveTo(108, 25)
-        ..quadraticBezierTo(120, 21, 132, 25),
-      _soft(Colors.white, 2, 0.22),
+        ..moveTo(110, 20)
+        ..quadraticBezierTo(122, 15, 136, 21),
+      _soft(Colors.white, 2.2, 0.24),
     );
-    if (s.hair == 2) {
-      _hairFill(c, Path()..addOval(Rect.fromCenter(center: const Offset(120, 12), width: 23, height: 20)));
-      c.drawRect(const Rect.fromLTWH(114, 20, 12, 2.4), Paint()..color = _mix(hair, Colors.black, 0.3));
-    }
   }
 
   @override
@@ -443,20 +548,31 @@ class _BodyPainter extends CustomPainter {
         ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
     );
 
-    // Long hair falls behind the shoulders.
+    // Long hair: the back, falling behind the shoulders with soft uneven ends.
     if (s.hair == 1) {
-      _headSpace(
-        canvas,
-        () => _hairFill(
+      _headSpace(canvas, () {
+        _hairFill(
           canvas,
           Path()
-            ..moveTo(96, 40)
-            ..cubicTo(84, 78, 86, 118, 91, 142)
-            ..quadraticBezierTo(120, 152, 149, 142)
-            ..cubicTo(154, 118, 156, 78, 144, 40)
+            ..moveTo(97, 36)
+            ..cubicTo(86, 52, 84, 80, 86, 110)
+            ..cubicTo(87, 126, 85, 140, 88, 150)
+            ..quadraticBezierTo(94, 156, 100, 150)
+            ..quadraticBezierTo(106, 157, 112, 151)
+            ..quadraticBezierTo(118, 158, 124, 151)
+            ..quadraticBezierTo(130, 157, 136, 150)
+            ..quadraticBezierTo(142, 156, 150, 149)
+            ..cubicTo(155, 140, 153, 126, 154, 110)
+            ..cubicTo(156, 80, 154, 52, 143, 36)
             ..close(),
-        ),
-      );
+        );
+        _strands(canvas, const [
+          [92, 60, 88, 100, 92, 146],
+          [104, 70, 100, 110, 104, 150],
+          [136, 70, 140, 110, 136, 150],
+          [148, 60, 152, 100, 148, 146],
+        ]);
+      });
     }
 
     // Legs (with a hint of the knee) and feet seen from the front.
@@ -1689,11 +1805,14 @@ class _AvatarPageState extends State<AvatarPage> {
   final _rng = Random();
   bool _in3d = false;
 
-  // The small model in the corner, shown once the big one has scrolled away.
+  // The small model that floats over the page once the big one has scrolled away.
+  // Drag it and let go: it glides to the nearest corner. It can be minimised to a
+  // small bubble. The corner and the size are remembered.
   final _scroll = ScrollController();
   final _showMini = ValueNotifier(false);
-  bool _miniLeft = false; // dragged to the bottom left
-  double _miniDrag = 0;
+  int _miniCorner = 0; // 0 top left, 1 top right, 2 bottom left, 3 bottom right
+  bool _miniSmall = false; // minimised
+  Offset? _miniDrag; // where it is while being dragged (null when resting in a corner)
   static const _stageBottom = 470.0; // where the big model ends (2D/3D switch + model)
 
   @override
@@ -1702,6 +1821,13 @@ class _AvatarPageState extends State<AvatarPage> {
     _scroll.addListener(() {
       final show = _scroll.hasClients && _scroll.offset > _stageBottom - 60;
       if (show != _showMini.value) _showMini.value = show;
+    });
+    SharedPreferences.getInstance().then((p) {
+      if (!mounted) return;
+      setState(() {
+        _miniCorner = (p.getInt('mini_corner') ?? 0).clamp(0, 3);
+        _miniSmall = p.getBool('mini_small') ?? false;
+      });
     });
   }
 
@@ -1712,15 +1838,30 @@ class _AvatarPageState extends State<AvatarPage> {
     super.dispose();
   }
 
-  Widget _miniModel() {
+  Future<void> _saveMini() async {
+    final p = await SharedPreferences.getInstance();
+    await p.setInt('mini_corner', _miniCorner);
+    await p.setBool('mini_small', _miniSmall);
+  }
+
+  void _setMiniSmall(bool v) {
+    setState(() => _miniSmall = v);
+    _saveMini();
+  }
+
+  Widget _miniModel(Size area) {
+    const pad = 12.0;
+    final w = _miniSmall ? 56.0 : 96.0, h = _miniSmall ? 56.0 : 164.0;
+    Offset corner(int c) => Offset(c.isEven ? pad : area.width - w - pad, c < 2 ? pad : area.height - h - pad);
+    final at = _miniDrag ?? corner(_miniCorner);
     return ValueListenableBuilder<bool>(
       valueListenable: _showMini,
       builder: (context, show, _) => AnimatedPositioned(
-        duration: const Duration(milliseconds: 220),
-        curve: Curves.easeOutCubic,
-        bottom: 12,
-        left: _miniLeft ? 12 : null,
-        right: _miniLeft ? null : 12,
+        // Follows the finger while dragging, then glides to the corner.
+        duration: _miniDrag != null ? Duration.zero : const Duration(milliseconds: 280),
+        curve: Curves.easeOutBack,
+        left: at.dx,
+        top: at.dy,
         child: IgnorePointer(
           ignoring: !show,
           child: AnimatedOpacity(
@@ -1728,32 +1869,100 @@ class _AvatarPageState extends State<AvatarPage> {
             opacity: show ? 1 : 0,
             child: AnimatedScale(
               duration: const Duration(milliseconds: 180),
-              scale: show ? 1 : 0.85,
-              child: Semantics(
-                button: true,
-                label: 'Your model. Tap to go back up to it.',
-                child: GestureDetector(
-                  onTap: () =>
-                      _scroll.animateTo(0, duration: const Duration(milliseconds: 350), curve: Curves.easeOutCubic),
-                  // Drag sideways to move it to the other corner.
-                  onHorizontalDragStart: (_) => _miniDrag = 0,
-                  onHorizontalDragUpdate: (d) => _miniDrag += d.delta.dx,
-                  onHorizontalDragEnd: (_) {
-                    if (_miniDrag < -30 && !_miniLeft) setState(() => _miniLeft = true);
-                    if (_miniDrag > 30 && _miniLeft) setState(() => _miniLeft = false);
-                  },
-                  child: Container(
-                    width: 84,
-                    height: 150,
-                    padding: const EdgeInsets.symmetric(vertical: 8),
+              // A little lift while it's held.
+              scale: !show ? 0.85 : (_miniDrag != null ? 1.06 : 1),
+              child: GestureDetector(
+                onPanStart: (_) => setState(() => _miniDrag = at),
+                onPanUpdate: (d) => setState(() {
+                  final p = (_miniDrag ?? at) + d.delta;
+                  _miniDrag = Offset(p.dx.clamp(0, area.width - w), p.dy.clamp(0, area.height - h));
+                }),
+                onPanEnd: (_) {
+                  // Glide to whichever corner is closest to where it was let go.
+                  final p = _miniDrag ?? at;
+                  final right = p.dx + w / 2 > area.width / 2, bottom = p.dy + h / 2 > area.height / 2;
+                  setState(() {
+                    _miniCorner = (bottom ? 2 : 0) + (right ? 1 : 0);
+                    _miniDrag = null;
+                  });
+                  _saveMini();
+                },
+                // Tap: the bubble opens back up; the card takes you up to the big model.
+                onTap: () => _miniSmall
+                    ? _setMiniSmall(false)
+                    : _scroll.animateTo(0, duration: const Duration(milliseconds: 350), curve: Curves.easeOutCubic),
+                child: Semantics(
+                  button: true,
+                  label: _miniSmall
+                      ? 'Open the small model. Drag to move it to another corner.'
+                      : 'Your model. Tap to go back up to it, or drag to move it to another corner.',
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    curve: Curves.easeOutCubic,
+                    width: w,
+                    height: h,
+                    clipBehavior: Clip.antiAlias,
                     decoration: BoxDecoration(
                       color: lilac,
-                      borderRadius: BorderRadius.circular(18),
+                      borderRadius: BorderRadius.circular(_miniSmall ? 28 : 20),
                       border: Border.all(color: Colors.white, width: 2),
-                      boxShadow: const [BoxShadow(color: Color(0x33000000), blurRadius: 14, offset: Offset(0, 4))],
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0x33000000),
+                          blurRadius: _miniDrag != null ? 22 : 14,
+                          offset: Offset(0, _miniDrag != null ? 8 : 4),
+                        ),
+                      ],
                     ),
-                    // Always the 2D model: light enough to draw small, and it updates instantly.
-                    child: AvatarView(key: const ValueKey('mini')),
+                    child: _miniSmall
+                        // Minimised: a bubble with the model's face.
+                        ? ClipOval(
+                            child: FittedBox(
+                              fit: BoxFit.cover,
+                              alignment: Alignment.topCenter,
+                              child: Align(
+                                alignment: Alignment.topCenter,
+                                heightFactor: 0.2,
+                                child: SizedBox(
+                                  width: 240,
+                                  height: 480,
+                                  child: AvatarView(key: const ValueKey('mini-face')),
+                                ),
+                              ),
+                            ),
+                          )
+                        : Stack(
+                            children: [
+                              // Always the 2D model: light enough to draw small, and it updates instantly.
+                              Positioned.fill(
+                                child: Padding(
+                                  padding: const EdgeInsets.fromLTRB(4, 18, 4, 6),
+                                  child: AvatarView(key: const ValueKey('mini')),
+                                ),
+                              ),
+                              // Minimise
+                              Positioned(
+                                top: 4,
+                                right: 4,
+                                child: Semantics(
+                                  button: true,
+                                  label: 'Minimise the small model',
+                                  child: Material(
+                                    color: Colors.black.withValues(alpha: 0.45),
+                                    shape: const CircleBorder(),
+                                    child: InkWell(
+                                      customBorder: const CircleBorder(),
+                                      onTap: () => _setMiniSmall(true),
+                                      child: const Padding(
+                                        padding: EdgeInsets.all(5),
+                                        child: Icon(Icons.close_fullscreen, size: 14, color: Colors.white),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
                   ),
                 ),
               ),
@@ -1889,19 +2098,80 @@ class _AvatarPageState extends State<AvatarPage> {
     );
   }
 
-  Widget _swatches(List<Color> colors, int selected, ValueChanged<int> onTap) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+  /// A row of colour swatches, ending with a button that opens the colour square.
+  Widget _swatches(
+    List<Color> colors,
+    int selected,
+    ValueChanged<int> onTap, {
+    required String title,
+    required Color? custom,
+    required Color current,
+    required ValueChanged<Color?> onCustom,
+    Color check = Colors.white70,
+  }) {
+    return Wrap(
+      alignment: WrapAlignment.spaceEvenly,
+      spacing: 10,
+      runSpacing: 10,
       children: [
         for (var i = 0; i < colors.length; i++)
-          GestureDetector(
-            onTap: () => onTap(i),
-            child: CircleAvatar(
-              radius: 16,
-              backgroundColor: colors[i],
-              child: selected == i ? const Icon(Icons.check, size: 16, color: Colors.white70) : null,
+          Semantics(
+            button: true,
+            selected: custom == null && selected == i,
+            child: GestureDetector(
+              onTap: () => onTap(i),
+              child: CircleAvatar(
+                radius: 16,
+                backgroundColor: colors[i],
+                child: custom == null && selected == i ? Icon(Icons.check, size: 16, color: check) : null,
+              ),
             ),
           ),
+        // Your own colour: shows it once picked; otherwise a rainbow.
+        Semantics(
+          button: true,
+          label: 'Pick any colour',
+          selected: custom != null,
+          child: GestureDetector(
+            onTap: () {
+              final before = custom;
+              pickColor(
+                context,
+                title: title,
+                current: current,
+                onChanged: (c) => onCustom(c),
+                onCancel: () => onCustom(before),
+              );
+            },
+            child: Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: custom,
+                gradient: custom == null
+                    ? const SweepGradient(
+                        colors: [
+                          Color(0xFFFF5A5A),
+                          Color(0xFFFFC94A),
+                          Color(0xFF6BD36B),
+                          Color(0xFF4AA8FF),
+                          Color(0xFFB36BFF),
+                          Color(0xFFFF5A5A),
+                        ],
+                      )
+                    : null,
+                border: Border.all(color: Colors.white, width: 2),
+                boxShadow: const [BoxShadow(color: Color(0x22000000), blurRadius: 3)],
+              ),
+              child: Icon(
+                custom == null ? Icons.add : Icons.check,
+                size: 16,
+                color: custom == null ? Colors.white : check,
+              ),
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -1923,105 +2193,119 @@ class _AvatarPageState extends State<AvatarPage> {
       listenable: Listenable.merge([closet, avatarSettings]),
       builder: (context, _) {
         final s = avatarSettings;
-        return Stack(
-          children: [
-            ListView(
-              controller: _scroll,
-              // Room at the bottom so the small model never covers the last row.
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 180),
-              children: [
-                SegmentedButton<bool>(
-                  segments: const [
-                    ButtonSegment(value: false, label: Text('2D')),
-                    ButtonSegment(value: true, label: Text('3D')),
-                  ],
-                  selected: {_in3d},
-                  onSelectionChanged: (v) => setState(() => _in3d = v.first),
-                ),
-                const SizedBox(height: 12),
-                Container(
-                  height: 400,
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  decoration: BoxDecoration(color: lilac, borderRadius: BorderRadius.circular(24)),
-                  // Not const on purpose: a const widget is never rebuilt, so the model would ignore the sliders.
-                  // Only one of the two views exists at a time.
-                  child: _in3d ? Model3DView(key: const ValueKey('3d')) : AvatarView(key: const ValueKey('2d')),
-                ),
-                const SizedBox(height: 8),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: OutlinedButton.icon(
-                    onPressed: currentModelOutfit().isEmpty ? null : () => saveOutfit(context, currentModelOutfit()),
-                    icon: const Icon(Icons.bookmark_add_outlined),
-                    label: const Text('Save outfit'),
+        return LayoutBuilder(
+          builder: (context, box) => Stack(
+            children: [
+              ListView(
+                controller: _scroll,
+                // Room at the bottom so the small model never covers the last row.
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 180),
+                children: [
+                  SegmentedButton<bool>(
+                    segments: const [
+                      ButtonSegment(value: false, label: Text('2D')),
+                      ButtonSegment(value: true, label: Text('3D')),
+                    ],
+                    selected: {_in3d},
+                    onSelectionChanged: (v) => setState(() => _in3d = v.first),
                   ),
-                ),
-                const Label('Body type'),
-                SegmentedButton<String>(
-                  segments: [for (final b in bodyTypes.keys) ButtonSegment(value: b, label: Text(b))],
-                  selected: {s.body},
-                  onSelectionChanged: (v) => s.setBody(v.first),
-                ),
-                Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: Text(
-                    'A starting point. Fine-tune it below. Picking another type resets your changes.',
-                    style: Theme.of(context).textTheme.bodySmall,
+                  const SizedBox(height: 12),
+                  Container(
+                    height: 400,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    decoration: BoxDecoration(color: lilac, borderRadius: BorderRadius.circular(24)),
+                    // Not const on purpose: a const widget is never rebuilt, so the model would ignore the sliders.
+                    // Only one of the two views exists at a time.
+                    child: _in3d ? Model3DView(key: const ValueKey('3d')) : AvatarView(key: const ValueKey('2d')),
                   ),
-                ),
-                const Label('Measurements'),
-                _slider('Height', 0.85, 1.0, s.height, s.setHeight),
-                for (var i = 0; i < measureLabels.length; i++)
-                  _slider(measureLabels[i], measureMin[i], measureMax[i], s.m[i], (v) => s.setMeasure(i, v)),
-                const Label('Skin tone'),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    for (var i = 0; i < skinTones.length; i++)
-                      GestureDetector(
-                        onTap: () => s.setSkin(i),
-                        child: CircleAvatar(
-                          radius: 16,
-                          backgroundColor: skinTones[i],
-                          child: s.skin == i ? const Icon(Icons.check, size: 16, color: Colors.black54) : null,
-                        ),
-                      ),
-                  ],
-                ),
-                const Label('Hair'),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 4,
-                  children: [
-                    for (var i = 0; i < hairStyles.length; i++)
-                      ChoiceChip(label: Text(hairStyles[i]), selected: s.hair == i, onSelected: (_) => s.setHair(i)),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                _swatches(hairColors, s.hairColor, s.setHairColor),
-                const Label('Eyes'),
-                _swatches(eyeColors, s.eyes, s.setEyes),
-                const Label('Head and arms'),
-                _slider('Head size', 0.9, 1.15, s.head, s.setHead),
-                _slider('Arms', 0.8, 1.5, s.arms, s.setArms),
-                const SizedBox(height: 12),
-                FilledButton.tonalIcon(
-                  onPressed: closet.items.isEmpty ? null : _shuffle,
-                  icon: const Icon(Icons.shuffle),
-                  label: const Text('Shuffle outfit'),
-                ),
-                StylistPanel(onChanged: () => setState(() {})),
-                if (closet.items.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.only(top: 12),
-                    child: Text('Add clothes to your closet to dress your model.', textAlign: TextAlign.center),
+                  const SizedBox(height: 8),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: OutlinedButton.icon(
+                      onPressed: currentModelOutfit().isEmpty ? null : () => saveOutfit(context, currentModelOutfit()),
+                      icon: const Icon(Icons.bookmark_add_outlined),
+                      label: const Text('Save outfit'),
+                    ),
                   ),
-                for (final slot in slots) _slotRow(slot),
-                _accessoryRow(),
-              ],
-            ),
-            _miniModel(),
-          ],
+                  const Label('Body type'),
+                  SegmentedButton<String>(
+                    segments: [for (final b in bodyTypes.keys) ButtonSegment(value: b, label: Text(b))],
+                    selected: {s.body},
+                    onSelectionChanged: (v) => s.setBody(v.first),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(
+                      'A starting point. Fine-tune it below. Picking another type resets your changes.',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                  const Label('Measurements'),
+                  _slider('Height', 0.85, 1.0, s.height, s.setHeight),
+                  for (var i = 0; i < measureLabels.length; i++)
+                    _slider(measureLabels[i], measureMin[i], measureMax[i], s.m[i], (v) => s.setMeasure(i, v)),
+                  const Label('Skin tone'),
+                  _swatches(
+                    skinTones,
+                    s.skin,
+                    s.setSkin,
+                    title: 'Skin tone',
+                    custom: s.skinCustom,
+                    current: s.skinTone,
+                    onCustom: s.setSkinCustom,
+                    check: Colors.black54,
+                  ),
+                  const Label('Hair'),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 4,
+                    children: [
+                      for (var i = 0; i < hairStyles.length; i++)
+                        ChoiceChip(label: Text(hairStyles[i]), selected: s.hair == i, onSelected: (_) => s.setHair(i)),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  _swatches(
+                    hairColors,
+                    s.hairColor,
+                    s.setHairColor,
+                    title: 'Hair colour',
+                    custom: s.hairCustom,
+                    current: s.hairTone,
+                    onCustom: s.setHairCustom,
+                  ),
+                  const Label('Eyes'),
+                  _swatches(
+                    eyeColors,
+                    s.eyes,
+                    s.setEyes,
+                    title: 'Eye colour',
+                    custom: s.eyesCustom,
+                    current: s.eyeTone,
+                    onCustom: s.setEyesCustom,
+                  ),
+                  const Label('Head and arms'),
+                  _slider('Head size', 0.9, 1.15, s.head, s.setHead),
+                  _slider('Arms', 0.8, 1.5, s.arms, s.setArms),
+                  const SizedBox(height: 12),
+                  FilledButton.tonalIcon(
+                    onPressed: closet.items.isEmpty ? null : _shuffle,
+                    icon: const Icon(Icons.shuffle),
+                    label: const Text('Shuffle outfit'),
+                  ),
+                  StylistPanel(onChanged: () => setState(() {})),
+                  if (closet.items.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 12),
+                      child: Text('Add clothes to your closet to dress your model.', textAlign: TextAlign.center),
+                    ),
+                  for (final slot in slots) _slotRow(slot),
+                  _accessoryRow(),
+                ],
+              ),
+              _miniModel(box.biggest),
+            ],
+          ),
         );
       },
     );

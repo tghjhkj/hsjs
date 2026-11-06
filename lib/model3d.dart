@@ -141,6 +141,78 @@ class _Mesh {
     }
   }
 
+  /// A surface through a grid of points ([x, y, z, shade] rows), shown from both
+  /// sides; [centre] gives the middle at a height, to point the normals outward.
+  void grid(List<List<List<double>>> rows, Color base, {double head = 1, required List<double> Function(double y) centre}) {
+    final start = count;
+    final cols = rows.first.length;
+    for (final row in rows) {
+      for (final p in row) {
+        final hx = 120 + (p[0] - 120) * head, hy = 50 + (p[1] - 50) * head;
+        pos.addAll([hx, hy, p[2] * head]);
+        nrm.addAll([0, 0, 0]);
+        uv.addAll([_whiteUv, _whiteUv]);
+        col.addAll([base.r * p[3], base.g * p[3], base.b * p[3]]);
+      }
+    }
+    final triStart = tri.length ~/ 3;
+    for (var j = 0; j < rows.length - 1; j++) {
+      for (var k = 0; k < cols - 1; k++) {
+        final a = start + j * cols + k, b = a + 1, c = a + cols, d = c + 1;
+        tri.addAll([a, c, b, b, c, d]);
+      }
+    }
+    final triEnd = tri.length ~/ 3;
+    for (var t = triStart; t < triEnd; t++) {
+      final i0 = tri[t * 3], i1 = tri[t * 3 + 1], i2 = tri[t * 3 + 2];
+      final ax = pos[i1 * 3] - pos[i0 * 3], ay = pos[i1 * 3 + 1] - pos[i0 * 3 + 1], az = pos[i1 * 3 + 2] - pos[i0 * 3 + 2];
+      final bx = pos[i2 * 3] - pos[i0 * 3], by = pos[i2 * 3 + 1] - pos[i0 * 3 + 1], bz = pos[i2 * 3 + 2] - pos[i0 * 3 + 2];
+      final nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
+      for (final i in [i0, i1, i2]) {
+        nrm[i * 3] += nx;
+        nrm[i * 3 + 1] += ny;
+        nrm[i * 3 + 2] += nz;
+      }
+    }
+    for (var i = start; i < count; i++) {
+      var nx = nrm[i * 3], ny = nrm[i * 3 + 1], nz = nrm[i * 3 + 2];
+      final len = sqrt(nx * nx + ny * ny + nz * nz);
+      if (len < 1e-9) {
+        nx = 0;
+        ny = -1;
+        nz = 0;
+      } else {
+        nx /= len;
+        ny /= len;
+        nz /= len;
+      }
+      final y = (pos[i * 3 + 1] - 50) / head + 50;
+      final c = centre(y);
+      final ox = pos[i * 3] - (120 + (c[0] - 120) * head), oy = pos[i * 3 + 1] - (50 + (c[1] - 50) * head), oz = pos[i * 3 + 2] - c[2] * head;
+      if (nx * ox + ny * oy + nz * oz < 0) {
+        nx = -nx;
+        ny = -ny;
+        nz = -nz;
+      }
+      nrm[i * 3] = nx;
+      nrm[i * 3 + 1] = ny;
+      nrm[i * 3 + 2] = nz;
+    }
+    for (var t = triStart; t < triEnd; t++) {
+      var nx = 0.0, ny = 0.0, nz = 0.0;
+      for (var j = 0; j < 3; j++) {
+        final i = tri[t * 3 + j];
+        nx += nrm[i * 3];
+        ny += nrm[i * 3 + 1];
+        nz += nrm[i * 3 + 2];
+      }
+      triNrm.addAll([nx / 3, ny / 3, nz / 3]);
+      triCull.add(false);
+      // Drawn just in front of the head it sits on, so the two never flicker through each other.
+      triBias.add(2.5);
+    }
+  }
+
   /// A flat picture card facing forward (seen from both sides), for a bag.
   void card(Rect r, double z, {double bias = 0}) {
     final start = count;
@@ -182,15 +254,85 @@ class _Mesh {
   }
 }
 
+/// Where the hair meets the skin at angle [a] around the head (turns; 0 = front,
+/// + = to the right), as a height in model units.
+double _hairline(String style, double a) {
+  final t = a.abs();
+  if (style == 'bun') return _interp([[0, 30], [0.18, 40], [0.25, 44], [0.33, 56], [0.5, 66]], t);
+  if (style == 'buzz') return _interp([[0, 31], [0.2, 42], [0.25, 44], [0.35, 56], [0.5, 64]], t);
+  // Short and long: a little fringe swept to one side, over the ears, down to the nape.
+  return _interp([[0, 32], [0.12, 38], [0.18, 43], [0.25, 47], [0.33, 58], [0.5, 70]], t) +
+      7 * exp(-pow((a + 0.035) / 0.06, 2));
+}
+
+/// Strands: a gentle light-and-dark ripple across the hair.
+double _strand(double a, double f) => 0.84 + 0.1 * sin(a * pi * 2 * 17 + f * 2.2) + 0.06 * sin(a * pi * 2 * 41);
+
+/// Grids of points [x, y, z, shade] for a hair style, each with the middle used to
+/// tell outward from inward at a given height.
+List<({List<List<List<double>>> rows, List<double> Function(double y) centre})> _hairGrids(String style) {
+  const cx = 120.0, cy = 51.0, cz = -0.8;
+  final grow = style == 'buzz' ? 1.1 : 2.4;
+  final rx = 25 + grow, ry = 30.5 + grow, rz = 27 + grow, top = cy - ry;
+  double signed(double a) => a > 0.5 ? a - 1 : a;
+  const n = 48, mRows = 14;
+  final cap = <List<List<double>>>[
+    for (var j = 0; j <= mRows; j++)
+      [
+        for (var k = 0; k <= n; k++)
+          () {
+            final f = j / mRows, a = k / n;
+            final y = top + (_hairline(style, signed(a)) - top) * f;
+            final dy = ((y - cy) / ry).clamp(-1.0, 1.0), r = sqrt(1 - dy * dy);
+            final puff = style == 'buzz' ? 0.0 : 2.2 * (1 - f) * f * 2; // fuller over the crown
+            // A buzz cut is too short for strands: just a faint even texture.
+            final shade = style == 'buzz' ? 0.95 : _strand(a, f);
+            return [cx + (rx + puff) * r * sin(a * pi * 2), y, cz + (rz + puff) * r * cos(a * pi * 2), shade];
+          }()
+      ]
+  ];
+  final grids = [(rows: cap, centre: (double y) => [cx, cy, cz])];
+  if (style == 'long') {
+    // Falls from under the cap down the back and sides, with locks framing the face.
+    const a0 = 0.16, a1 = 0.84, nl = 34, ml = 20; // locks stay beside the face, not over it
+    final r64 = sqrt(1 - pow((64 - cy) / ry, 2));
+    final panel = <List<List<double>>>[
+      for (var j = 0; j <= ml; j++)
+        [
+          for (var k = 0; k <= nl; k++)
+            () {
+              final f = j / ml, a = a0 + (a1 - a0) * k / nl;
+              final yStart = _hairline('long', signed(a)) - 4, yEnd = 152 + 7 * sin(a * pi * 2 * 5);
+              final y = yStart + (yEnd - yStart) * f;
+              double rxY, rzY, czY;
+              if (y <= 64) {
+                final dy = ((y - cy) / ry).clamp(-1.0, 1.0), r = sqrt(1 - dy * dy);
+                rxY = (rx + 0.6) * r;
+                rzY = (rz + 0.6) * r;
+                czY = cz;
+              } else {
+                rxY = _interp([[64, (rx + 0.6) * r64], [92, 24], [128, 29], [158, 27]], y);
+                rzY = _interp([[64, (rz + 0.6) * r64], [92, 19], [128, 21], [158, 19]], y);
+                czY = _interp([[64, cz], [100, -4], [158, -7]], y);
+              }
+              return [cx + rxY * sin(a * pi * 2), y, czY + rzY * cos(a * pi * 2), _strand(a, f) * (0.92 + 0.08 * (1 - f))];
+            }()
+        ]
+    ];
+    grids.add((rows: panel, centre: (double y) => [cx, y, y <= 64 ? cz : _interp([[64, cz], [100, -4], [158, -7]], y)]));
+  }
+  return grids;
+}
+
 /// Builds the model: body, face and hair, then the clothes as shells just outside
 /// the body. [skirt] (optional) are rings for a skirt or dress hanging free.
 _Mesh _buildModel(AvatarSettings s, List<_Ring>? skirt, [Rect? bag]) {
   final m = _Mesh();
   final g = _Geo(s.m, s.arms);
   final sh = g.sh, hi = g.hi, th = g.th, k = g.k;
-  final skin = skinTones[s.skin];
+  final skin = s.skinTone;
   const base = Color(0xFFC4BBD0);
-  final hair = hairColors[s.hairColor];
+  final hair = s.hairTone;
   final h = s.head;
 
   // Torso: shoulder slope, then the same widths as the 2D body.
@@ -244,30 +386,25 @@ _Mesh _buildModel(AvatarSettings s, List<_Ring>? skirt, [Rect? bag]) {
   for (final side in [-1.0, 1.0]) {
     final x = 120 + side * 9.5;
     m.blob(x, 52, 23.6, 4.4, 2.8, 1.6, color: const Color(0xFFFBFAF8), head: h, steps: 6, seg: 12, bias: 0.6);
-    m.blob(x, 52, 24.7, 2.1, 2.1, 0.9, color: eyeColors[s.eyes], head: h, steps: 6, seg: 10, bias: 0.8);
+    m.blob(x, 52, 24.7, 2.1, 2.1, 0.9, color: s.eyeTone, head: h, steps: 6, seg: 10, bias: 0.8);
     m.blob(x + 0.2, 52, 25.3, 1.0, 1.0, 0.5, color: const Color(0xFF120C0A), head: h, steps: 4, seg: 8, bias: 1.0);
     m.blob(x - side * 0.3, 45.4, 25.6, 5.2, 0.9, 0.8, color: Color.lerp(hair, Colors.black, 0.1)!, head: h, steps: 4, seg: 10, bias: 0.6);
   }
   m.blob(120, 67.6, 24.2, 4.8, 1.6, 1.4, color: Color.lerp(skin, const Color(0xFFB04A50), 0.5)!, head: h, steps: 6, seg: 12, bias: 0.6);
 
-  // Hair
+  // Hair: a shell over the skull that follows a natural hairline (a side-swept
+  // fringe, over the tops of the ears, down to the nape), with soft strand shading.
   if (s.hair != 4) {
-    final buzz = s.hair == 3;
-    m.blob(120, 50, -1, buzz ? 25.6 : 27.2, buzz ? 31 : 32.6, buzz ? 27.8 : 29.2,
-        t0: 0, t1: 0.36, color: hair, head: h, cull: false, bias: 0.4, steps: 8, seg: 28);
-    if (!buzz) {
-      m.blob(120, 50, -1, 27.2, 32.6, 29.2, t0: 0.36, t1: 0.7, a0: 0.2, a1: 0.8, color: hair, head: h, cull: false, bias: 0.4, steps: 8, seg: 20);
+    final style = const ['short', 'long', 'bun', 'buzz'][s.hair];
+    final tint = style == 'buzz' ? Color.lerp(hair, skin, 0.35)! : hair;
+    for (final g in _hairGrids(style)) {
+      m.grid(g.rows, tint, head: h, centre: g.centre);
     }
-    if (s.hair == 1) {
-      m.tube([
-        for (var y = 50.0; y <= 142; y += 8)
-          () {
-            final rx = _interp([[50, 27.5], [90, 27], [142, 26]], y);
-            return _Ring(120, y, rx, rx * 0.8, -4);
-          }()
-      ], a0: 0.22, a1: 0.78, color: hair, head: h, cull: false, seg: 18);
+    if (style == 'bun') {
+      m.blob(120, 19, -11, 11.5, 10.5, 11.5, color: Color.lerp(hair, Colors.black, 0.05)!, head: h, steps: 10, seg: 18);
+      m.tube(const [_Ring(120, 27, 7, 7, -8), _Ring(120, 30, 8.5, 8.5, -8)],
+          color: Color.lerp(hair, Colors.black, 0.3)!, head: h, seg: 16);
     }
-    if (s.hair == 2) m.blob(120, 15, -10, 11, 10, 11, color: hair, head: h, steps: 8, seg: 14);
   }
 
   // Clothes: shells just outside the body, showing the flat fitted clothes.
@@ -282,7 +419,7 @@ _Mesh _buildModel(AvatarSettings s, List<_Ring>? skirt, [Rect? bag]) {
   }
   // Accessories: a shell over the head (hat, glasses), the neck (scarf), and a flat
   // card for a bag held at the hand.
-  m.blob(120, 50, 0, 28.6, 34.2, 30.6, textured: true, head: h, bias: 3, steps: 14, seg: 28);
+  m.blob(120, 50, 0, 28.6, 34.2, 30.6, textured: true, head: h, bias: 4, steps: 14, seg: 28);
   m.tube(const [_Ring(120, 64, 11.5, 12), _Ring(120, 100, 12, 12.5)], textured: true, bias: clothBias);
   if (bag != null) m.card(bag, 4, bias: 4);
   if (skirt != null && skirt.length > 2) {
@@ -363,7 +500,7 @@ class _Model3DViewState extends State<Model3DView> {
     final s = avatarSettings;
     final looks = _wornLooks(_ready);
     final key = [
-      s.m.join(','), s.arms, s.head, s.skin, s.hair, s.hairColor, s.eyes,
+      s.m.join(','), s.arms, s.head, s.skinTone.toARGB32(), s.hair, s.hairTone.toARGB32(), s.eyeTone.toARGB32(),
       for (final slot in outfitSlots) '${avatarOutfit[slot]?.id}:${looks.photos[slot] != null}',
       for (final k in accessoryKinds) '${avatarAccessories[k]?.id}:${looks.accessories[k] != null}',
     ].join('|');

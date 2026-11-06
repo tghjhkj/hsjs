@@ -271,7 +271,11 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: Text(['My closet', 'Outfits', 'Model'][_tab])),
-      body: [const ClosetPage(), OutfitPage(onWear: () => setState(() => _tab = 2)), const AvatarPage()][_tab],
+      body: [
+        ClosetPage(onShowModel: () => setState(() => _tab = 2)),
+        OutfitPage(onWear: () => setState(() => _tab = 2)),
+        const AvatarPage(),
+      ][_tab],
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tab,
         onDestinationSelected: (i) => setState(() => _tab = i),
@@ -291,7 +295,10 @@ class ItemTile extends StatelessWidget {
 
   /// Null when not selecting; otherwise whether this piece is ticked.
   final bool? selected;
-  const ItemTile(this.item, {super.key, this.onTap, this.onLongPress, this.selected});
+
+  /// Shows a small "Wearing" label when the model has this piece on.
+  final bool worn;
+  const ItemTile(this.item, {super.key, this.onTap, this.onLongPress, this.selected, this.worn = false});
 
   @override
   Widget build(BuildContext context) {
@@ -325,6 +332,16 @@ class ItemTile extends StatelessWidget {
                   ),
                 ),
               ),
+              if (worn)
+                Positioned(
+                  top: 6,
+                  right: 6,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(color: aubergine, borderRadius: BorderRadius.circular(10)),
+                    child: const Text('Wearing', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600)),
+                  ),
+                ),
               if (selected != null)
                 Positioned(
                   top: 6,
@@ -345,7 +362,9 @@ class ItemTile extends StatelessWidget {
 }
 
 class ClosetPage extends StatefulWidget {
-  const ClosetPage({super.key});
+  /// Opens the Model tab (from "See model" after putting something on).
+  final VoidCallback? onShowModel;
+  const ClosetPage({super.key, this.onShowModel});
 
   @override
   State<ClosetPage> createState() => _ClosetPageState();
@@ -379,6 +398,39 @@ class _ClosetPageState extends State<ClosetPage> {
           if ((_filter == 'All' || i.category == _filter) && (_showSamples || !i.id.startsWith('sample-'))) i
       ];
   Set<String>? _selected; // ids of ticked pieces while selecting (null when not selecting)
+
+  /// Whether the model is wearing this piece.
+  bool _isWorn(ClosetItem item) =>
+      avatarOutfit.values.any((i) => i?.id == item.id) || avatarAccessories.values.any((i) => i?.id == item.id);
+
+  /// Puts pieces on the model (keeping the rest of the outfit), with a way to go and look.
+  void _wear(List<ClosetItem> pieces) {
+    for (final p in pieces) {
+      if (outfitSlots.contains(p.category) || p.category == 'Accessories') wearPiece(p.category, p);
+    }
+    setState(() => _selected = null);
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(SnackBar(
+      content: Text(pieces.length == 1 ? 'Wearing “${pieces.first.name}”.' : 'Wearing ${pieces.length} pieces.'),
+      action: widget.onShowModel == null ? null : SnackBarAction(label: 'See model', onPressed: widget.onShowModel!),
+    ));
+  }
+
+  /// Takes a piece off the model.
+  void _takeOff(ClosetItem item) {
+    setState(() {
+      for (final slot in avatarOutfit.keys.toList()) {
+        if (avatarOutfit[slot]?.id == item.id) avatarOutfit[slot] = null;
+      }
+      for (final k in avatarAccessories.keys.toList()) {
+        if (avatarAccessories[k]?.id == item.id) avatarAccessories[k] = null;
+      }
+    });
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text('Took off “${item.name}”.')));
+  }
 
   void _toggle(ClosetItem item) => setState(() {
         final sel = _selected ??= {};
@@ -542,6 +594,27 @@ class _ClosetPageState extends State<ClosetPage> {
               Text(item.name, style: Theme.of(context).textTheme.headlineSmall),
               Text(item.meta),
               const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: _isWorn(item)
+                    ? OutlinedButton.icon(
+                        onPressed: () {
+                          Navigator.pop(sheet);
+                          _takeOff(item);
+                        },
+                        icon: const Icon(Icons.remove_circle_outline),
+                        label: const Text('Take it off the model'),
+                      )
+                    : FilledButton.icon(
+                        onPressed: () {
+                          Navigator.pop(sheet);
+                          _wear([item]);
+                        },
+                        icon: const Icon(Icons.person_outline),
+                        label: const Text('Wear it on the model'),
+                      ),
+              ),
+              const SizedBox(height: 8),
               // Older pieces saved as photos can be turned flat here.
               if (item.spec == null) ...[
               FilledButton.icon(
@@ -601,11 +674,20 @@ class _ClosetPageState extends State<ClosetPage> {
                     child: Text('${_selected!.length} selected',
                         maxLines: 1, overflow: TextOverflow.ellipsis, style: Theme.of(context).textTheme.titleSmall),
                   ),
-                  TextButton(
+                  IconButton(
+                    tooltip: 'Select all',
                     onPressed: () => setState(() {
                       _selected = {for (final i in _visible) i.id};
                     }),
-                    child: const Text('Select all'),
+                    icon: const Icon(Icons.select_all),
+                  ),
+                  const SizedBox(width: 4),
+                  IconButton.filledTonal(
+                    tooltip: 'Wear the selected pieces',
+                    onPressed: _selected!.isEmpty
+                        ? null
+                        : () => _wear(closet.items.where((i) => _selected!.contains(i.id)).toList()),
+                    icon: const Icon(Icons.person_outline),
                   ),
                   const SizedBox(width: 4),
                   FilledButton.icon(
@@ -736,6 +818,7 @@ class _ClosetPageState extends State<ClosetPage> {
                           // Keyed by piece, so pictures never show in the wrong tile after a delete or undo.
                           key: ValueKey(shown[i].id),
                           selected: selecting ? _selected!.contains(shown[i].id) : null,
+                          worn: _isWorn(shown[i]),
                           onTap: () => selecting ? _toggle(shown[i]) : _showItem(shown[i]),
                           // Press and hold to start selecting.
                           onLongPress: () => _toggle(shown[i]),
